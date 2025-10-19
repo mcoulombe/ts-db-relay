@@ -59,15 +59,9 @@ func main() {
 		log.Fatalf("unable to instantiate Tailscale Local tsClient: %v", err)
 	}
 
-	var relay Relay
-	switch *databaseType {
-	case "postgres":
-		relay, err = newPostgresRelay(*databaseAddress, *databaseCAFile, tsClient)
-		if err != nil {
-			log.Fatal(err)
-		}
-	default:
-		log.Fatalf("unsupported --db-type %q", *databaseType)
+	relay, err := NewRelay(DBType(*databaseType), *databaseAddress, *databaseCAFile, tsClient)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	expvar.Publish(*tailscaleHostname, relay.Metrics())
