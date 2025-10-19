@@ -10,9 +10,9 @@ import (
 
 const tsDBRelayCapability = "tailscale.test/cap/ts-db-relay"
 
-// Relay is used to proxy connections from Tailscale clients to a database server.
+// Relay is used to proxy connections from Tailscale nodes to a database server.
 //
-// Uses the client’s Tailscale identity to authorize access and map it
+// Uses the node’s Tailscale identity to authorize access and map it
 // to a database user or role, according to the grants defined in the tailnet policy file.
 type Relay interface {
 	// Serve listens to incoming tailscale connections on the provided listener
@@ -35,7 +35,11 @@ type Relay interface {
 // relayMetrics holds metrics about the relay's operation
 // which can be consulted on the debug endpoint.
 type relayMetrics struct {
-	activeSessions  expvar.Int
+	// activeSessions is the number of currently active sessions.
+	activeSessions expvar.Int
+	// startedSessions is the total number of sessions started since the relay began running.
 	startedSessions expvar.Int
-	errors          metrics.LabelMap
+	// errors is a map of error types to their number of occurrence since the relay began running.
+	errors metrics.LabelMap
 }
+

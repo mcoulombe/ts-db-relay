@@ -13,10 +13,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"expvar"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"os"
@@ -49,6 +47,8 @@ type impersonateSchema struct {
 var _ Relay = (*postgresRelay)(nil)
 
 type postgresRelay struct {
+	base
+
 	dbAddr         string
 	dbHost         string
 	dbCertPool     *x509.CertPool
@@ -59,8 +59,6 @@ type postgresRelay struct {
 	sessionDatabase string
 	sessionUser     string
 	sessionPassword string
-
-	relayMetrics *relayMetrics
 }
 
 func newPostgresRelay(dbAddr, dbCAPath string, tsClient *local.Client) (*postgresRelay, error) {
@@ -82,38 +80,22 @@ func newPostgresRelay(dbAddr, dbCAPath string, tsClient *local.Client) (*postgre
 		return nil, err
 	}
 
-	return &postgresRelay{
+	r := &postgresRelay{
 		dbAddr:         dbAddr,
 		dbHost:         dbHost,
 		dbCertPool:     dbCertPool,
 		downstreamCert: []tls.Certificate{downstreamCert},
 		tsClient:       tsClient,
-		relayMetrics: &relayMetrics{
+	}
+
+	r.base = base{
+		metrics: &relayMetrics{
 			errors: metrics.LabelMap{Label: "kind"},
 		},
-	}, nil
-}
-
-func (r *postgresRelay) Metrics() expvar.Var {
-	ret := &metrics.Set{}
-	ret.Set("sessions_active", &r.relayMetrics.activeSessions)
-	ret.Set("sessions_started", &r.relayMetrics.startedSessions)
-	ret.Set("session_errors", &r.relayMetrics.errors)
-	return ret
-}
-
-func (r *postgresRelay) Serve(tsListener net.Listener) error {
-	for {
-		tsConn, err := tsListener.Accept()
-		if err != nil {
-			return err
-		}
-		go func() {
-			if err := r.serve(tsConn); err != nil {
-				log.Printf("session ended with error: %v", err)
-			}
-		}()
+		serve: r.serve,
 	}
+
+	return r, nil
 }
 
 func (r *postgresRelay) serve(tsConn net.Conn) error {
@@ -129,32 +111,32 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	dbConn, dbClient, err := initDBConnections(r.dbAddr, r.dbHost, r.dbCertPool)
 	defer dbConn.Close()
 	if err != nil {
-		r.relayMetrics.errors.Add("database-connection", 1)
+		r.base.metrics.errors.Add("database-connection", 1)
 		return err
 	}
 
 	clientIsTLS, err := interceptStartSSL(tsConn, dbConn)
 	if err != nil {
-		r.relayMetrics.errors.Add("client-protocol", 1)
+		r.base.metrics.errors.Add("client-protocol", 1)
 		return err
 	}
 
 	err = performTLSHandshake(ctx, dbClient, tsConn, dbConn, clientIsTLS)
 	if err != nil {
-		r.relayMetrics.errors.Add("tls-handshake", 1)
+		r.base.metrics.errors.Add("tls-handshake", 1)
 		return err
 	}
 
 	clientConn, err := initClientConnection(ctx, r.dbHost, r.downstreamCert, tsConn, clientIsTLS)
 	if err != nil {
-		r.relayMetrics.errors.Add("client-connection", 1)
+		r.base.metrics.errors.Add("client-connection", 1)
 		return err
 	}
 
 	// Bidirectional connection is established, impersonate the desired database user, if allowed
 	params, err := interceptStartupMessage(clientConn)
 	if err != nil {
-		r.relayMetrics.errors.Add("start-up-message", 1)
+		r.base.metrics.errors.Add("start-up-message", 1)
 		return err
 	}
 	r.sessionUser = params["user"]
@@ -162,45 +144,46 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 
 	allowed, err := r.hasAccess(ctx, tsConn)
 	if err != nil {
-		r.relayMetrics.errors.Add("authentication", 1)
+		r.base.metrics.errors.Add("authentication", 1)
 		return err
 	}
 	if !allowed {
-		r.relayMetrics.errors.Add("authorization", 1)
+		r.base.metrics.errors.Add("authorization", 1)
 		return err
 	}
 
 	err = r.seedCredentials(ctx)
 	if err != nil {
-		r.relayMetrics.errors.Add("seed-credentials", 1)
+		r.base.metrics.errors.Add("seed-credentials", 1)
 		return err
 	}
 
 	if err := writeHijackedStartupToDatabase(dbClient, r.sessionUser, r.sessionDatabase); err != nil {
-		r.relayMetrics.errors.Add("start-up-params", 1)
+		r.base.metrics.errors.Add("start-up-params", 1)
 		return fmt.Errorf("sending startup to upstream: %v", err)
 	}
 
 	if err := interceptAuthAndInjectPassword(dbClient, clientConn, r.sessionUser, r.sessionPassword); err != nil {
-		r.relayMetrics.errors.Add("inject-credentials", 1)
+		r.base.metrics.errors.Add("inject-credentials", 1)
 		return err
 	}
 	if err := forwardInitialServerMessages(dbClient, clientConn); err != nil {
-		r.relayMetrics.errors.Add("wait-for-readiness", 1)
+		r.base.metrics.errors.Add("wait-for-readiness", 1)
 		return err
 	}
 
 	// Create audit file for this session
 	auditFile, err := r.createAuditFile(ctx, tsConn, r.dbHost, r.sessionDatabase, r.sessionUser)
 	if err != nil {
-		r.relayMetrics.errors.Add("audit-file-create-failed", 1)
+		r.base.metrics.errors.Add("audit-file-create-failed", 1)
 		return fmt.Errorf("failed to create audit file: %v", err)
 	}
 	defer auditFile.Close()
 
 	// Client has access and relay impersonated a database user, just relay the traffic as long as the connection is alive
-	r.relayMetrics.activeSessions.Add(1)
-	defer r.relayMetrics.activeSessions.Add(-1)
+	r.base.metrics.startedSessions.Add(1)
+	r.base.metrics.activeSessions.Add(1)
+	defer r.base.metrics.activeSessions.Add(-1)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -221,7 +204,7 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 func (r *postgresRelay) getClientIdentity(ctx context.Context, conn net.Conn) (string, string, []tailcfg.RawMessage, error) {
 	whois, err := r.tsClient.WhoIs(ctx, conn.RemoteAddr().String())
 	if err != nil {
-		r.relayMetrics.errors.Add("whois-failed", 1)
+		r.base.metrics.errors.Add("whois-failed", 1)
 		return "", "", nil, fmt.Errorf("unexpected error getting client identity: %v", err)
 	}
 
@@ -242,7 +225,7 @@ func (r *postgresRelay) getClientIdentity(ctx context.Context, conn net.Conn) (s
 		}
 	}
 	if user == "" || machine == "" {
-		r.relayMetrics.errors.Add("no-ts-identity", 1)
+		r.base.metrics.errors.Add("no-ts-identity", 1)
 		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
 	}
 
@@ -257,7 +240,7 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 
 	// Check if the client has access to the requested user and database through Tailscale capabilities
 	if capabilities == nil {
-		r.relayMetrics.errors.Add("no-ts-db-relay-capability", 1)
+		r.base.metrics.errors.Add("no-ts-db-relay-capability", 1)
 		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
 	}
 
@@ -265,7 +248,7 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 		var grantCap grantCapSchema
 
 		if err := json.Unmarshal([]byte(capability), &grantCap); err != nil {
-			r.relayMetrics.errors.Add("capability-parse-error", 1)
+			r.base.metrics.errors.Add("capability-parse-error", 1)
 			return false, fmt.Errorf("failed to parse capability value: %v", err)
 		}
 
@@ -294,7 +277,7 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 		return true, nil
 	}
 
-	r.relayMetrics.errors.Add("not-allowed-to-impersonate", 1)
+	r.base.metrics.errors.Add("not-allowed-to-impersonate", 1)
 	return false, fmt.Errorf("user %q is not allowed to access database %q as user %q", user, r.sessionDatabase, r.sessionUser)
 }
 
@@ -304,17 +287,17 @@ func (r *postgresRelay) seedCredentials(_ context.Context) error {
 	credFilePath := filepath.Join("/var/lib/creds", filename)
 
 	if _, err := os.Stat(credFilePath); os.IsNotExist(err) {
-		r.relayMetrics.errors.Add("credential-file-not-found", 1)
+		r.base.metrics.errors.Add("credential-file-not-found", 1)
 		return fmt.Errorf("credential file %s not found", credFilePath)
 	}
 
 	passwordBytes, err := os.ReadFile(credFilePath)
 	if err != nil {
-		r.relayMetrics.errors.Add("credential-file-read-error", 1)
+		r.base.metrics.errors.Add("credential-file-read-error", 1)
 		return fmt.Errorf("failed to read credential file %s: %v", credFilePath, err)
 	}
 	if len(passwordBytes) == 0 {
-		r.relayMetrics.errors.Add("credential-file-empty", 1)
+		r.base.metrics.errors.Add("credential-file-empty", 1)
 		return fmt.Errorf("credential file %s is empty", credFilePath)
 	}
 
@@ -644,7 +627,7 @@ func (r *postgresRelay) createAuditFile(ctx context.Context, conn net.Conn, dbHo
 	// Get client identity for audit file naming
 	user, machine, _, err := r.getClientIdentity(ctx, conn)
 	if err != nil {
-		r.relayMetrics.errors.Add("audit-identity-failed", 1)
+		r.base.metrics.errors.Add("audit-identity-failed", 1)
 		return nil, fmt.Errorf("failed to get client identity for audit: %v", err)
 	}
 
