@@ -67,6 +67,12 @@ chmod 644 /var/lib/certs/server.crt /var/lib/certs/ca.crt /var/lib/certs/cert.co
 
 echo "TLS certificates generated with SANs."
 
+# Initialize database if empty
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "Initializing Postgres database..."
+    su postgres -c "initdb -D $PGDATA"
+fi
+
 # Write a secure pg_hba.conf that forces password auth and SSL
 cat > "$PGDATA/pg_hba.conf" <<'EOF'
 local   all             all                                     trust
@@ -76,12 +82,6 @@ EOF
 
 # Ensure correct permissions
 chown postgres:postgres "$PGDATA/pg_hba.conf"
-
-# Initialize database if empty
-if [ ! -s "$PGDATA/PG_VERSION" ]; then
-    echo "Initializing Postgres database..."
-    su postgres -c "initdb -D $PGDATA"
-fi
 
 # Configure Postgres for SSL
 echo "Configuring Postgres SSL settings..."
