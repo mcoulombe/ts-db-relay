@@ -8,7 +8,7 @@ This is a POC.
 
 Note: setup from scratch in a new environment not tested yet. These steps likely made assumptions about pre-existing requirements.
 
-1. Build the binary.
+1. Build the binary. Make sure to set `GOARCH=arm64` instead if you're intending to run this on a Silicon Mac.
 
    ```bash
     GOOS=linux GOARCH=amd64 go build -o ./cmd/ts-db-relay.exe ./...
