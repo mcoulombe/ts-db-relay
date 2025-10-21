@@ -125,6 +125,14 @@ END
 EOSQL
 echo "User 'test' is ready."
 
+# Create or update testdb
+echo "Creating/updating test db..."
+psql -v ON_ERROR_STOP=1 -U postgres <<-EOSQL
+SELECT 'CREATE DATABASE testdb'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'testdb')\gexec
+EOSQL
+echo "Database 'testdb' is ready."
+
 # Start DB relay
 echo "Starting DB relay..."
 TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-relay \
