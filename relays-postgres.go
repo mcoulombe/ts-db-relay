@@ -64,7 +64,7 @@ type postgresRelay struct {
 	sessionPassword string
 }
 
-func newPostgresRelay(dbAddr, dbCAPath string, tsClient *local.Client) (*postgresRelay, error) {
+func newPostgresRelay(dbAddr, dbCAPath, dbAdminUser, dbAdminPass string, tsClient *local.Client) (*postgresRelay, error) {
 	dbHost, dbPort, err := net.SplitHostPort(dbAddr)
 	if err != nil {
 		return nil, err
@@ -93,14 +93,8 @@ func newPostgresRelay(dbAddr, dbCAPath string, tsClient *local.Client) (*postgre
 		return nil, fmt.Errorf("plugin does not implement Database interface")
 	}
 
-	adminUser := os.Getenv("DB_ADMIN_USER")
-	adminPassword := os.Getenv("DB_ADMIN_PASSWORD")
-	if adminUser == "" || adminPassword == "" {
-		return nil, fmt.Errorf("DB_ADMIN_USER and DB_ADMIN_PASSWORD environment variables must be set")
-	}
-
 	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%s/postgres?sslmode=require",
-		adminUser, adminPassword, dbHost, dbPort)
+		dbAdminUser, dbAdminPass, dbHost, dbPort)
 
 	initReq := dbplugin.InitializeRequest{
 		Config: map[string]interface{}{
@@ -353,7 +347,6 @@ func (r *postgresRelay) seedCredentials(ctx context.Context) error {
 
 	r.sessionUser = resp.Username
 	r.sessionPassword = generatedPassword
-	fmt.Printf("user %s will connect as %s with password %s\n", r.sessionUser, resp.Username, r.sessionPassword)
 
 	return nil
 }

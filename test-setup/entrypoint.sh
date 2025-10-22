@@ -159,36 +159,72 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'testdb')\gexec
 EOSQL
 echo "Database 'testdb' is ready."
 
+# Create config directory
+mkdir -p /etc/ts-db-relay
+chmod 755 /etc/ts-db-relay
+
+# Generate shared config file
+echo "Generating config file..."
+cat > /etc/ts-db-relay/config.json <<EOF
+{
+  "tailscale": {
+    "control_url": "$TS_SERVER",
+    "hostname": "postgres-db",
+    "state_dir": "/var/lib/ts-state"
+  },
+  "database": {
+    "type": "postgres",
+    "address": "localhost:5432",
+    "ca_file": "/var/lib/certs/ca.crt",
+    "admin_user": "$DB_ADMIN_USER",
+    "admin_password": "$DB_ADMIN_PASSWORD"
+  },
+  "relay": {
+    "port": 5432,
+    "debug_port": 80
+  }
+}
+EOF
+
+chmod 600 /etc/ts-db-relay/config.json
+echo "Config file created."
+
 # Start DB relay
 echo "Starting DB relay..."
-DB_ADMIN_USER=$DB_ADMIN_USER \
-DB_ADMIN_PASSWORD=$DB_ADMIN_PASSWORD \
 TS_AUTHKEY=$TS_AUTHKEY \
 /usr/local/bin/ts-db-relay \
---ts-control-url=$TS_SERVER \
---ts-hostname=postgres-db \
---ts-state-dir=/var/lib/ts-state \
---db-type=postgres \
---db-address=localhost:5432 \
---db-ca-file=/var/lib/certs/ca.crt \
---relay-port=5432 \
---debug-port=80 \
+--config=/etc/ts-db-relay/config.json \
 &
+
+# Create config for dummy relay
+cat > /etc/ts-db-relay/dummy-config.json <<EOF
+{
+  "tailscale": {
+    "control_url": "$TS_SERVER",
+    "hostname": "dummy",
+    "state_dir": "/var/lib/ts-dummy-state"
+  },
+  "database": {
+    "type": "postgres",
+    "address": "localhost:5432",
+    "ca_file": "/var/lib/certs/ca.crt",
+    "admin_user": "$DB_ADMIN_USER",
+    "admin_password": "$DB_ADMIN_PASSWORD"
+  },
+  "relay": {
+    "port": 5433,
+    "debug_port": 81
+  }
+}
+EOF
+
+chmod 600 /etc/ts-db-relay/dummy-config.json
 
 # Start a dummy relay to prove multiple can live side by side
 echo "Starting dummy DB relay..."
-DB_ADMIN_USER=$DB_ADMIN_USER \
-DB_ADMIN_PASSWORD=$DB_ADMIN_PASSWORD \
 TS_AUTHKEY=$TS_AUTHKEY \
 /usr/local/bin/ts-db-relay \
---ts-control-url=$TS_SERVER \
---ts-hostname=dummy \
---ts-state-dir=/var/lib/ts-dummy-state \
---db-type=postgres \
---db-address=localhost:5432 \
---db-ca-file=/var/lib/certs/ca.crt \
---relay-port=5433 \
---debug-port=81 \
+--config=/etc/ts-db-relay/dummy-config.json \
 &
 
 # Keep container alive

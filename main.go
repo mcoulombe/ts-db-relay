@@ -13,45 +13,39 @@ import (
 )
 
 var (
-	tailscaleControlURL = flag.String("ts-control-url", "https://login.tailscale.com/", "Tailscale control server URL (if empty, uses default)")
-	tailscaleHostname   = flag.String("ts-hostname", "ts-db-postgresRelay", "Device name to use in Tailscale")
-	tailscaleStateDir   = flag.String("ts-state-dir", "", "Directory in which to store the Tailscale auth state")
-
-	databaseType    = flag.String("db-type", "", "Type of database to connect to (currently only 'postgres' is supported)") // TODO should be inferred using databaseAddress
-	databaseAddress = flag.String("db-address", "", "Address of the database target, in host:port format")
-	databaseCAFile  = flag.String("db-ca-file", "", "File containing the PEM-encoded CA certificate for the upstream database")
-
-	relayPort = flag.Int("relay-port", 0, "Listening port for client connections")
-	debugPort = flag.Int("debug-port", 0, "Listening port for debug/metrics endpoint")
+	configFile = flag.String("config", "", "Path to configuration file (JSON format)")
 )
 
 func main() {
 	flag.Parse()
 
-	if *tailscaleStateDir == "" {
-		log.Fatal("missing --ts-state-dir")
+	if *configFile == "" {
+		log.Fatal("missing --config flag: path to configuration file required")
 	}
-	if *databaseType == "" {
-		log.Fatal("missing --db-type")
+
+	config, err := LoadConfig(*configFile)
+	if err != nil {
+		log.Fatalf("failed to load configuration: %v", err)
 	}
-	if *databaseAddress == "" {
-		log.Fatal("missing --db-address")
-	}
-	if *databaseCAFile == "" {
-		log.Fatal("missing --db-ca-file")
-	}
-	if *relayPort == 0 {
-		log.Fatal("missing --relay-port")
+
+	if err := config.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
 	}
 
 	if os.Getenv("TS_AUTHKEY") == "" {
 		log.Print("Note: you need to run this with TS_AUTHKEY=... the first time, to join your tailnet of choice.")
 	}
 
+	// Set default control URL if not specified
+	controlURL := config.Tailscale.ControlURL
+	if controlURL == "" {
+		controlURL = "https://login.tailscale.com/"
+	}
+
 	tsServer := &tsnet.Server{
-		ControlURL: *tailscaleControlURL,
-		Hostname:   *tailscaleHostname,
-		Dir:        *tailscaleStateDir,
+		ControlURL: controlURL,
+		Hostname:   config.Tailscale.Hostname,
+		Dir:        config.Tailscale.StateDir,
 	}
 
 	tsClient, err := tsServer.LocalClient()
@@ -59,33 +53,40 @@ func main() {
 		log.Fatalf("unable to instantiate Tailscale Local tsClient: %v", err)
 	}
 
-	relay, err := NewRelay(DBType(*databaseType), *databaseAddress, *databaseCAFile, tsClient)
+	relay, err := NewRelay(
+		DBType(config.Database.Type),
+		config.Database.Address,
+		config.Database.CAFile,
+		config.Database.AdminUser,
+		config.Database.AdminPassword,
+		tsClient,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	expvar.Publish(*tailscaleHostname, relay.Metrics())
+	expvar.Publish(config.Tailscale.Hostname, relay.Metrics())
 
-	if *debugPort != 0 {
+	if config.Relay.DebugPort != 0 {
 		mux := http.NewServeMux()
 		tsweb.Debugger(mux)
 		srv := &http.Server{
 			Handler: mux,
 		}
-		debugListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", *debugPort))
+		debugListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", config.Relay.DebugPort))
 		if err != nil {
 			log.Fatal(err)
 		}
 		go func() {
-			log.Printf("serving debug access to %s on port %d", *databaseAddress, *debugPort)
+			log.Printf("serving debug access to %s on port %d", config.Database.Address, config.Relay.DebugPort)
 			log.Fatal(srv.Serve(debugListener))
 		}()
 	}
 
-	relayListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", *relayPort))
+	relayListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", config.Relay.Port))
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("serving access to %s on port %d", *databaseAddress, *relayPort)
+	log.Printf("serving access to %s on port %d", config.Database.Address, config.Relay.Port)
 	log.Fatal(relay.Serve(relayListener))
 }

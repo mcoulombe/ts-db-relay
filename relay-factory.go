@@ -14,10 +14,10 @@ const (
 )
 
 // NewRelay creates a new Relay implementation based on the database type
-func NewRelay(dbType DBType, dbAddr, dbCAPath string, tsClient *local.Client) (Relay, error) {
+func NewRelay(dbType DBType, dbAddr, dbCAPath, dbAdminUser, dbAdminPass string, tsClient *local.Client) (Relay, error) {
 	switch dbType {
 	case DBTypePostgres:
-		return newPostgresRelay(dbAddr, dbCAPath, tsClient)
+		return newPostgresRelay(dbAddr, dbCAPath, dbAdminUser, dbAdminPass, tsClient)
 	default:
 		return nil, fmt.Errorf("unsupported database type %q", dbType)
 	}
