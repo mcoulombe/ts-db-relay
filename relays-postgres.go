@@ -26,25 +26,12 @@ import (
 	"github.com/openbao/openbao/sdk/v2/database/dbplugin/v5"
 	"tailscale.com/client/local"
 	"tailscale.com/metrics"
-	"tailscale.com/tailcfg"
 )
 
 var (
 	sslStart       = [8]byte{0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f}
 	plaintextStart = [8]byte{0, 0, 0, 86, 0, 3, 0, 0}
 )
-
-type grantCapSchema struct {
-	Postgres postgresCapSchema `json:"postgres"`
-}
-type postgresCapSchema struct {
-	Impersonate impersonateSchema `json:"impersonate"`
-}
-
-type impersonateSchema struct {
-	Databases []string `json:"databases"`
-	Users     []string `json:"users"`
-}
 
 var _ Relay = (*postgresRelay)(nil)
 
@@ -53,11 +40,11 @@ type postgresRelay struct {
 
 	dbAddr         string
 	dbHost         string
+	dbPort         string
+	dbAdminUser    string
+	dbAdminPass    string
 	dbCertPool     *x509.CertPool
 	downstreamCert []tls.Certificate
-
-	tsClient *local.Client
-	dbPlugin dbplugin.Database
 
 	sessionDatabase string
 	sessionUser     string
@@ -83,48 +70,57 @@ func newPostgresRelay(dbAddr, dbCAPath, dbAdminUser, dbAdminPass string, tsClien
 		return nil, err
 	}
 
-	pluginInterface, err := postgresql.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create PostgreSQL plugin: %v", err)
-	}
-
-	dbPlugin, ok := pluginInterface.(dbplugin.Database)
-	if !ok {
-		return nil, fmt.Errorf("plugin does not implement Database interface")
-	}
-
-	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%s/postgres?sslmode=require",
-		dbAdminUser, dbAdminPass, dbHost, dbPort)
-
-	initReq := dbplugin.InitializeRequest{
-		Config: map[string]interface{}{
-			"connection_url": connectionURL,
-		},
-		VerifyConnection: true,
-	}
-
-	_, err = dbPlugin.Initialize(context.Background(), initReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize PostgreSQL plugin: %v", err)
-	}
-
 	r := &postgresRelay{
 		dbAddr:         dbAddr,
 		dbHost:         dbHost,
+		dbPort:         dbPort,
+		dbAdminUser:    dbAdminUser,
+		dbAdminPass:    dbAdminPass,
 		dbCertPool:     dbCertPool,
 		downstreamCert: []tls.Certificate{downstreamCert},
-		tsClient:       tsClient,
-		dbPlugin:       dbPlugin,
 	}
 
 	r.base = base{
 		metrics: &relayMetrics{
 			errors: metrics.LabelMap{Label: "kind"},
 		},
-		serve: r.serve,
+		tsClient: tsClient,
+		serve:    r.serve,
+	}
+
+	if err := r.initPlugin(); err != nil {
+		return nil, err
 	}
 
 	return r, nil
+}
+
+func (r *postgresRelay) initPlugin() error {
+	pluginInterface, err := postgresql.New()
+	if err != nil {
+		return fmt.Errorf("failed to create PostgreSQL plugin: %v", err)
+	}
+
+	plugin, ok := pluginInterface.(dbplugin.Database)
+	if !ok {
+		return fmt.Errorf("plugin does not implement Database interface")
+	}
+
+	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%s/postgres?sslmode=require",
+		r.dbAdminUser, r.dbAdminPass, r.dbHost, r.dbPort)
+
+	_, err = plugin.Initialize(context.Background(), dbplugin.InitializeRequest{
+		Config: map[string]interface{}{
+			"connection_url": connectionURL,
+		},
+		VerifyConnection: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize PostgreSQL plugin: %v", err)
+	}
+
+	r.plugin = plugin
+	return nil
 }
 
 func (r *postgresRelay) serve(tsConn net.Conn) error {
@@ -214,52 +210,21 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	r.base.metrics.activeSessions.Add(1)
 	defer r.base.metrics.activeSessions.Add(-1)
 
-	queryTerminatedCh := make(chan struct{}, 10)
+	// Channel to signal when an audit entry is complete and should be flushed
+	entryFinished := make(chan struct{}, 10)
 	errc := make(chan error, 1)
 	go func() {
-		_, err := auditCopy(auditFile, dbClient, clientConn, queryTerminatedCh)
+		_, err := auditCopy(auditFile, dbClient, clientConn, entryFinished)
 		errc <- err
 	}()
 	go func() {
-		_, err := copyAndDetectReadyForQuery(clientConn, dbClient, queryTerminatedCh)
+		_, err := copyAndDetectReadyForQuery(clientConn, dbClient, entryFinished)
 		errc <- err
 	}()
 	if err := <-errc; err != nil {
 		return fmt.Errorf("session terminated with error: %v", err)
 	}
 	return nil
-}
-
-// getClientIdentity extracts user and machine information from Tailscale WhoIs
-func (r *postgresRelay) getClientIdentity(ctx context.Context, conn net.Conn) (string, string, []tailcfg.RawMessage, error) {
-	whois, err := r.tsClient.WhoIs(ctx, conn.RemoteAddr().String())
-	if err != nil {
-		r.base.metrics.errors.Add("whois-failed", 1)
-		return "", "", nil, fmt.Errorf("unexpected error getting client identity: %v", err)
-	}
-
-	machine := ""
-	if whois.Node != nil {
-		if whois.Node.Hostinfo.ShareeNode() {
-			machine = "external-device"
-		} else {
-			machine = strings.TrimSuffix(whois.Node.Name, ".")
-		}
-	}
-
-	user := ""
-	if whois.UserProfile != nil {
-		user = whois.UserProfile.LoginName
-		if user == "tagged-devices" && whois.Node != nil {
-			user = strings.Join(whois.Node.Tags, ",")
-		}
-	}
-	if user == "" || machine == "" {
-		r.base.metrics.errors.Add("no-ts-identity", 1)
-		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
-	}
-
-	return user, machine, whois.CapMap[tailcfg.PeerCapability(tsDBRelayCapability)], nil
 }
 
 func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, error) {
@@ -340,7 +305,7 @@ func (r *postgresRelay) seedCredentials(ctx context.Context) error {
 		Password:       generatedPassword,
 	}
 
-	resp, err := r.dbPlugin.NewUser(ctx, newUserReq)
+	resp, err := r.plugin.NewUser(ctx, newUserReq)
 	if err != nil {
 		r.base.metrics.errors.Add("plugin-newuser-failed", 1)
 		return fmt.Errorf("failed to generate credentials for user %s: %v", r.sessionUser, err)
@@ -698,7 +663,7 @@ func (r *postgresRelay) createAuditFile(ctx context.Context, conn net.Conn, dbHo
 	return auditFile, nil
 }
 
-func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, readyForQuery <-chan struct{}) (int64, error) {
+func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, entryFinished <-chan struct{}) (int64, error) {
 	var written int64
 	var auditBuffer bytes.Buffer
 	readBuf := make([]byte, 32*1024)
@@ -724,11 +689,11 @@ func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, readyForQuery <
 
 	for {
 		select {
-		case <-readyForQuery:
-			// Flush accumulated buffer when ReadyForQuery is received
+		case <-entryFinished:
+			// Flush accumulated buffer when entry is complete
 			if auditBuffer.Len() > 0 {
 				flushAuditBuffer(auditFile, &auditBuffer, queryStartTime)
-				queryStartTime = time.Now() // Reset timer for next query
+				queryStartTime = time.Now() // Reset timer for next entry
 			}
 
 		case result := <-readChan:
@@ -768,7 +733,7 @@ func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, readyForQuery <
 
 // copyAndDetectReadyForQuery copies data from src to dst and signals on the channel
 // whenever a ReadyForQuery ('Z') message is detected from the PostgreSQL server
-func copyAndDetectReadyForQuery(dst io.Writer, src io.Reader, readyForQuery chan<- struct{}) (int64, error) {
+func copyAndDetectReadyForQuery(dst io.Writer, src io.Reader, entryFinished chan<- struct{}) (int64, error) {
 	var written int64
 	buf := make([]byte, 32*1024)
 	msgBuf := bytes.Buffer{}
@@ -797,9 +762,9 @@ func copyAndDetectReadyForQuery(dst io.Writer, src io.Reader, readyForQuery chan
 
 				// Check if this is a ReadyForQuery message
 				if msgType == 'Z' {
-					// Signal that query is complete
+					// Signal that the audit entry is complete
 					select {
-					case readyForQuery <- struct{}{}:
+					case entryFinished <- struct{}{}:
 					default:
 						// Channel full, skip signal
 					}

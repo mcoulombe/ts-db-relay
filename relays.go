@@ -10,9 +10,21 @@ import (
 
 const tsDBRelayCapability = "tailscale.test/cap/ts-db-relay"
 
+type grantCapSchema struct {
+	Postgres postgresCapSchema `json:"postgres"`
+}
+type postgresCapSchema struct {
+	Impersonate impersonateSchema `json:"impersonate"`
+}
+
+type impersonateSchema struct {
+	Databases []string `json:"databases"`
+	Users     []string `json:"users"`
+}
+
 // Relay is used to proxy connections from Tailscale nodes to a database server.
 //
-// Uses the node’s Tailscale identity to authorize access and map it
+// Uses the node's Tailscale identity to authorize access and map it
 // to a database user or role, according to the grants defined in the tailnet policy file.
 type Relay interface {
 	// Serve listens to incoming tailscale connections on the provided listener
@@ -22,6 +34,8 @@ type Relay interface {
 	// Useful for monitoring and debugging.
 	Metrics() expvar.Var
 
+	// initPlugin initializes the database plugin that manages users and credentials
+	initPlugin() error
 	// hasAccess checks whether the given Tailscale connection is authorized to access the database
 	// according to the grants defined in the tailnet policy file.
 	hasAccess(context.Context, net.Conn) (bool, error)
@@ -42,4 +56,3 @@ type relayMetrics struct {
 	// errors is a map of error types to their number of occurrence since the relay began running.
 	errors metrics.LabelMap
 }
-
