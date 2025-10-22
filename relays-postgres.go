@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/vault/plugins/database/postgresql"
+	"github.com/hashicorp/vault/sdk/database/dbplugin/v5"
 	"tailscale.com/client/local"
 	"tailscale.com/metrics"
 	"tailscale.com/tailcfg"
@@ -55,6 +57,7 @@ type postgresRelay struct {
 	downstreamCert []tls.Certificate
 
 	tsClient *local.Client
+	dbPlugin dbplugin.Database
 
 	sessionDatabase string
 	sessionUser     string
@@ -62,7 +65,7 @@ type postgresRelay struct {
 }
 
 func newPostgresRelay(dbAddr, dbCAPath string, tsClient *local.Client) (*postgresRelay, error) {
-	dbHost, _, err := net.SplitHostPort(dbAddr)
+	dbHost, dbPort, err := net.SplitHostPort(dbAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -80,12 +83,44 @@ func newPostgresRelay(dbAddr, dbCAPath string, tsClient *local.Client) (*postgre
 		return nil, err
 	}
 
+	pluginInterface, err := postgresql.New()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PostgreSQL plugin: %v", err)
+	}
+
+	dbPlugin, ok := pluginInterface.(dbplugin.Database)
+	if !ok {
+		return nil, fmt.Errorf("plugin does not implement Database interface")
+	}
+
+	adminUser := os.Getenv("DB_ADMIN_USER")
+	adminPassword := os.Getenv("DB_ADMIN_PASSWORD")
+	if adminUser == "" || adminPassword == "" {
+		return nil, fmt.Errorf("DB_ADMIN_USER and DB_ADMIN_PASSWORD environment variables must be set")
+	}
+
+	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%s/postgres?sslmode=require",
+		adminUser, adminPassword, dbHost, dbPort)
+
+	initReq := dbplugin.InitializeRequest{
+		Config: map[string]interface{}{
+			"connection_url": connectionURL,
+		},
+		VerifyConnection: true,
+	}
+
+	_, err = dbPlugin.Initialize(context.Background(), initReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize PostgreSQL plugin: %v", err)
+	}
+
 	r := &postgresRelay{
 		dbAddr:         dbAddr,
 		dbHost:         dbHost,
 		dbCertPool:     dbCertPool,
 		downstreamCert: []tls.Certificate{downstreamCert},
 		tsClient:       tsClient,
+		dbPlugin:       dbPlugin,
 	}
 
 	r.base = base{
@@ -281,27 +316,44 @@ func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, err
 	return false, fmt.Errorf("user %q is not allowed to access database %q as user %q", user, r.sessionDatabase, r.sessionUser)
 }
 
-func (r *postgresRelay) seedCredentials(_ context.Context) error {
-	// TODO unsafe POC implementation, should generate dynamic credentials or connect to external secrets manager
-	filename := fmt.Sprintf("postgres-%s-%s-%s.txt", r.dbHost, r.sessionDatabase, r.sessionUser)
-	credFilePath := filepath.Join("/var/lib/creds", filename)
+func (r *postgresRelay) seedCredentials(ctx context.Context) error {
+	passwordBytes := make([]byte, 32)
+	if _, err := rand.Read(passwordBytes); err != nil {
+		r.base.metrics.errors.Add("password-generation-failed", 1)
+		return fmt.Errorf("failed to generate random password: %v", err)
+	}
+	generatedPassword := hex.EncodeToString(passwordBytes)
 
-	if _, err := os.Stat(credFilePath); os.IsNotExist(err) {
-		r.base.metrics.errors.Add("credential-file-not-found", 1)
-		return fmt.Errorf("credential file %s not found", credFilePath)
+	creationStatements := dbplugin.Statements{
+		Commands: []string{
+			fmt.Sprintf(`CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`),
+			fmt.Sprintf(`GRANT "%s" TO "{{name}}";`, r.sessionUser),
+		},
 	}
 
-	passwordBytes, err := os.ReadFile(credFilePath)
+	usernameConfig := dbplugin.UsernameMetadata{
+		DisplayName: r.sessionUser,
+		RoleName:    r.sessionUser,
+	}
+
+	expiration := time.Now().Add(24 * time.Hour) // TODO should we disable expiration and just keep credentials for the duration of a session?
+	newUserReq := dbplugin.NewUserRequest{
+		UsernameConfig: usernameConfig,
+		Statements:     creationStatements,
+		Expiration:     expiration,
+		CredentialType: dbplugin.CredentialTypePassword,
+		Password:       generatedPassword,
+	}
+
+	resp, err := r.dbPlugin.NewUser(ctx, newUserReq)
 	if err != nil {
-		r.base.metrics.errors.Add("credential-file-read-error", 1)
-		return fmt.Errorf("failed to read credential file %s: %v", credFilePath, err)
-	}
-	if len(passwordBytes) == 0 {
-		r.base.metrics.errors.Add("credential-file-empty", 1)
-		return fmt.Errorf("credential file %s is empty", credFilePath)
+		r.base.metrics.errors.Add("plugin-newuser-failed", 1)
+		return fmt.Errorf("failed to generate credentials for user %s: %v", r.sessionUser, err)
 	}
 
-	r.sessionPassword = string(passwordBytes)
+	r.sessionUser = resp.Username
+	r.sessionPassword = generatedPassword
+	fmt.Printf("user %s will connect as %s with password %s\n", r.sessionUser, resp.Username, r.sessionPassword)
 
 	return nil
 }

@@ -69,9 +69,11 @@ echo "TLS certificates generated with SANs."
 
 # Write a secure pg_hba.conf that forces password auth and SSL
 cat > "$PGDATA/pg_hba.conf" <<'EOF'
-local   all             all                                     trust
+local   all             postgres                                trust
+local   all             all                                     md5
 hostssl all             all             127.0.0.1/32            md5
 hostssl all             all             ::1/128                 md5
+hostssl all             all             0.0.0.0/0               md5
 EOF
 
 # Ensure correct permissions
@@ -107,6 +109,30 @@ until pg_isready -h localhost -p 5432; do
 done
 echo "Postgres is ready!"
 
+# Generate random admin password
+echo "Generating admin credentials..."
+export DB_ADMIN_USER="relay_admin"
+export DB_ADMIN_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+echo "Admin user: $DB_ADMIN_USER"
+
+# Create admin user with CREATEROLE and CREATEDB privileges
+echo "Creating/updating admin user..."
+psql -v ON_ERROR_STOP=1 -U postgres <<-EOSQL
+DO
+\$do\$
+BEGIN
+   IF NOT EXISTS (
+      SELECT FROM pg_catalog.pg_roles WHERE rolname = '$DB_ADMIN_USER'
+   ) THEN
+      CREATE ROLE $DB_ADMIN_USER WITH LOGIN CREATEROLE CREATEDB PASSWORD '$DB_ADMIN_PASSWORD';
+   ELSE
+      ALTER ROLE $DB_ADMIN_USER WITH LOGIN CREATEROLE CREATEDB PASSWORD '$DB_ADMIN_PASSWORD';
+   END IF;
+END
+\$do\$;
+EOSQL
+echo "Admin user '$DB_ADMIN_USER' is ready."
+
 # Create or update test user
 echo "Creating/updating test user..."
 psql -v ON_ERROR_STOP=1 -U postgres <<-EOSQL
@@ -135,7 +161,10 @@ echo "Database 'testdb' is ready."
 
 # Start DB relay
 echo "Starting DB relay..."
-TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-relay \
+DB_ADMIN_USER=$DB_ADMIN_USER \
+DB_ADMIN_PASSWORD=$DB_ADMIN_PASSWORD \
+TS_AUTHKEY=$TS_AUTHKEY \
+/usr/local/bin/ts-db-relay \
 --ts-control-url=$TS_SERVER \
 --ts-hostname=postgres-db \
 --ts-state-dir=/var/lib/ts-state \
@@ -147,8 +176,11 @@ TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-relay \
 &
 
 # Start a dummy relay to prove multiple can live side by side
-echo "Starting DB relay..."
-TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-relay \
+echo "Starting dummy DB relay..."
+DB_ADMIN_USER=$DB_ADMIN_USER \
+DB_ADMIN_PASSWORD=$DB_ADMIN_PASSWORD \
+TS_AUTHKEY=$TS_AUTHKEY \
+/usr/local/bin/ts-db-relay \
 --ts-control-url=$TS_SERVER \
 --ts-hostname=dummy \
 --ts-state-dir=/var/lib/ts-dummy-state \
