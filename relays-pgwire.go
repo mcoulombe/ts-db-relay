@@ -187,6 +187,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		r.base.metrics.errors.Add("seed-credentials", 1)
 		return err
 	}
+	defer r.revokeCredentials(context.Background())
 
 	if err := writeHijackedStartupToDatabase(dbClient, r.sessionUser, r.sessionDatabase); err != nil {
 		r.base.metrics.errors.Add("start-up-params", 1)
@@ -270,6 +271,27 @@ func (r *pgWireRelay) seedCredentials(ctx context.Context) error {
 	r.sessionPassword = generatedPassword
 
 	return nil
+}
+
+func (r *pgWireRelay) revokeCredentials(ctx context.Context) {
+	if r.sessionUser == "" {
+		return
+	}
+
+	deleteReq := dbplugin.DeleteUserRequest{
+		Username: r.sessionUser,
+		Statements: dbplugin.Statements{
+			Commands: []string{
+				fmt.Sprintf(`REVOKE "%s" FROM "{{name}}";`, r.sessionUser),
+				`DROP ROLE IF EXISTS "{{name}}";`,
+			},
+		},
+	}
+
+	_, err := r.plugin.DeleteUser(ctx, deleteReq)
+	if err != nil {
+		r.base.metrics.errors.Add("revoke-credentials-failed", 1)
+	}
 }
 
 func mkSelfSigned(hostname string) (tls.Certificate, error) {
