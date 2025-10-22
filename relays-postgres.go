@@ -214,13 +214,14 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	r.base.metrics.activeSessions.Add(1)
 	defer r.base.metrics.activeSessions.Add(-1)
 
+	queryTerminatedCh := make(chan struct{}, 10)
 	errc := make(chan error, 1)
 	go func() {
-		_, err := auditCopy(auditFile, dbClient, clientConn)
+		_, err := auditCopy(auditFile, dbClient, clientConn, queryTerminatedCh)
 		errc <- err
 	}()
 	go func() {
-		_, err := io.Copy(clientConn, dbClient)
+		_, err := copyAndDetectReadyForQuery(clientConn, dbClient, queryTerminatedCh)
 		errc <- err
 	}()
 	if err := <-errc; err != nil {
@@ -677,10 +678,9 @@ func (r *postgresRelay) createAuditFile(ctx context.Context, conn net.Conn, dbHo
 	}
 
 	// Create unique audit file for this session
-	// Format: {timestamp}-{user}-{machine}-{dbHost}-{database}-{dbUser}.log
+	// Format: {timestamp}-{dbUser}.log
 	timestamp := time.Now().Format("20060102-150405")
-	auditFilename := fmt.Sprintf("%s-%s-%s-%s-%s-%s.log",
-		timestamp, user, machine, dbHost, database, dbUser)
+	auditFilename := fmt.Sprintf("%s-%s.log", timestamp, dbUser)
 	auditPath := filepath.Join("/var/lib/audits", auditFilename)
 
 	auditFile, err := os.Create(auditPath)
@@ -698,16 +698,118 @@ func (r *postgresRelay) createAuditFile(ctx context.Context, conn net.Conn, dbHo
 	return auditFile, nil
 }
 
-func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader) (int64, error) {
-	buf := make([]byte, 32*1024)
+func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, readyForQuery <-chan struct{}) (int64, error) {
 	var written int64
+	var auditBuffer bytes.Buffer
+	readBuf := make([]byte, 32*1024)
+	queryStartTime := time.Now()
+
+	// Create a channel for read operations
+	type readResult struct {
+		n   int
+		err error
+	}
+	readChan := make(chan readResult, 1)
+
+	// Start a goroutine to perform blocking reads
+	go func() {
+		for {
+			n, err := src.Read(readBuf)
+			readChan <- readResult{n, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-readyForQuery:
+			// Flush accumulated buffer when ReadyForQuery is received
+			if auditBuffer.Len() > 0 {
+				flushAuditBuffer(auditFile, &auditBuffer, queryStartTime)
+				queryStartTime = time.Now() // Reset timer for next query
+			}
+
+		case result := <-readChan:
+			if result.n > 0 {
+				// Accumulate data in audit buffer
+				auditBuffer.Write(readBuf[:result.n])
+
+				// Forward to destination
+				nw, ew := dst.Write(readBuf[:result.n])
+				if nw < 0 || result.n < nw {
+					nw = 0
+					if ew == nil {
+						ew = fmt.Errorf("invalid write result")
+					}
+				}
+				written += int64(nw)
+				if ew != nil {
+					return written, ew
+				}
+				if result.n != nw {
+					return written, io.ErrShortWrite
+				}
+			}
+			if result.err != nil {
+				// Flush any remaining buffer before exiting
+				if auditBuffer.Len() > 0 {
+					flushAuditBuffer(auditFile, &auditBuffer, queryStartTime)
+				}
+				if result.err != io.EOF {
+					return written, result.err
+				}
+				return written, nil
+			}
+		}
+	}
+}
+
+// copyAndDetectReadyForQuery copies data from src to dst and signals on the channel
+// whenever a ReadyForQuery ('Z') message is detected from the PostgreSQL server
+func copyAndDetectReadyForQuery(dst io.Writer, src io.Reader, readyForQuery chan<- struct{}) (int64, error) {
+	var written int64
+	buf := make([]byte, 32*1024)
+	msgBuf := bytes.Buffer{}
 
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
-			fmt.Fprintf(auditFile, "[%s]: %d bytes\n", time.Now().Format("15:04:05.000"), nr)
-			fmt.Fprintf(auditFile, "%s\n", hex.Dump(buf[:nr]))
+			// Accumulate in message buffer for parsing
+			msgBuf.Write(buf[:nr])
 
+			// Check for ReadyForQuery messages in the accumulated buffer
+			for msgBuf.Len() >= 5 {
+				// PostgreSQL message format: type (1 byte) + length (4 bytes) + body
+				msgType := msgBuf.Bytes()[0]
+				if msgBuf.Len() < 5 {
+					break
+				}
+
+				msgLen := int(binary.BigEndian.Uint32(msgBuf.Bytes()[1:5]))
+				totalLen := 1 + msgLen
+
+				// Wait for complete message
+				if msgBuf.Len() < totalLen {
+					break
+				}
+
+				// Check if this is a ReadyForQuery message
+				if msgType == 'Z' {
+					// Signal that query is complete
+					select {
+					case readyForQuery <- struct{}{}:
+					default:
+						// Channel full, skip signal
+					}
+				}
+
+				// Consume the message from buffer
+				msgBuf.Next(totalLen)
+			}
+
+			// Forward to destination
 			nw, ew := dst.Write(buf[:nr])
 			if nw < 0 || nr < nw {
 				nw = 0
@@ -731,4 +833,59 @@ func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader) (int64, error) 
 		}
 	}
 	return written, nil
+}
+
+// flushAuditBuffer writes the accumulated audit buffer to file as a single entry
+func flushAuditBuffer(auditFile *os.File, buffer *bytes.Buffer, startTime time.Time) {
+	if buffer.Len() == 0 {
+		return
+	}
+
+	// Extract query text from PostgreSQL protocol messages
+	// Format: 'Q' (1 byte) + length (4 bytes) + query string + null terminator
+	data := buffer.Bytes()
+	queryText := extractQueryText(data)
+
+	if queryText != "" {
+		fmt.Fprintf(auditFile, "[%s]: %s\n", startTime.Format("15:04:05.000"), queryText)
+	}
+
+	buffer.Reset()
+}
+
+// extractQueryText parses PostgreSQL protocol messages and extracts query text
+func extractQueryText(data []byte) string {
+	var queries []string
+	offset := 0
+
+	for offset < len(data) {
+		if offset+5 > len(data) {
+			break
+		}
+
+		msgType := data[offset]
+		msgLen := int(binary.BigEndian.Uint32(data[offset+1 : offset+5]))
+		totalLen := 1 + msgLen
+
+		if offset+totalLen > len(data) {
+			break
+		}
+
+		// 'Q' is the Simple Query message type
+		if msgType == 'Q' {
+			// Query string starts after type (1 byte) + length (4 bytes)
+			// and ends with a null terminator
+			queryStart := offset + 5
+			queryEnd := offset + totalLen - 1 // Exclude null terminator
+
+			if queryEnd > queryStart && queryEnd <= len(data) {
+				query := string(data[queryStart:queryEnd])
+				queries = append(queries, query)
+			}
+		}
+
+		offset += totalLen
+	}
+
+	return strings.Join(queries, "; ")
 }
