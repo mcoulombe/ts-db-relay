@@ -1,5 +1,6 @@
 data
 cmd
 test-setup/tailscale-state
+ts-db-relay
 
 .idea
