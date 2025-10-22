@@ -97,7 +97,7 @@ func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, st
 
 // hasAccess checks if the given Tailscale identity is authorized to access the specified database
 // according to the grants defined in the tailnet policy file.
-func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionUser string, capabilities []tailcfg.RawMessage) (bool, error) {
+func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
 	if capabilities == nil {
 		b.metrics.errors.Add("no-ts-db-relay-capability", 1)
 		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
@@ -115,14 +115,14 @@ func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionUser string, c
 			continue
 		}
 
-		userAllowed := false
-		for _, allowedUser := range dbCap.Impersonate.Users {
-			if allowedUser == sessionUser {
-				userAllowed = true
+		roleAllowed := false
+		for _, allowedRole := range dbCap.Impersonate.Roles {
+			if allowedRole == sessionRole {
+				roleAllowed = true
 				break
 			}
 		}
-		if !userAllowed {
+		if !roleAllowed {
 			continue
 		}
 
@@ -141,5 +141,5 @@ func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionUser string, c
 	}
 
 	b.metrics.errors.Add("not-allowed-to-impersonate", 1)
-	return false, fmt.Errorf("user %q is not allowed to access database %q as user %q", user, sessionDB, sessionUser)
+	return false, fmt.Errorf("user %q is not allowed to access database %q as role %q", user, sessionDB, sessionRole)
 }

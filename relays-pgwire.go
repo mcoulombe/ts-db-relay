@@ -46,7 +46,7 @@ type pgWireRelay struct {
 	downstreamCert []tls.Certificate
 
 	sessionDatabase string
-	sessionUser     string
+	sessionRole     string
 	sessionPassword string
 }
 
@@ -155,13 +155,13 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
-	// Bidirectional connection is established, impersonate the desired database user, if allowed
+	// Bidirectional connection is established, impersonate the desired database role, if allowed
 	params, err := interceptStartupMessage(clientConn)
 	if err != nil {
 		r.base.metrics.errors.Add("start-up-message", 1)
 		return err
 	}
-	r.sessionUser = params["user"]
+	r.sessionRole = params["user"]
 	r.sessionDatabase = params["database"]
 
 	// Verify access based on Tailscale identity and capabilities
@@ -171,7 +171,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
-	allowed, err := r.hasAccess(user, machine, string(r.dbType), r.sessionDatabase, r.sessionUser, capabilities)
+	allowed, err := r.hasAccess(user, machine, string(r.dbType), r.sessionDatabase, r.sessionRole, capabilities)
 	if err != nil {
 		r.base.metrics.errors.Add("authentication", 1)
 		return err
@@ -187,14 +187,14 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		r.base.metrics.errors.Add("seed-credentials", 1)
 		return err
 	}
-	defer r.revokeCredentials(context.Background())
+	defer r.revokeCredentials(ctx)
 
-	if err := writeHijackedStartupToDatabase(dbClient, r.sessionUser, r.sessionDatabase); err != nil {
+	if err := writeHijackedStartupToDatabase(dbClient, r.sessionRole, r.sessionDatabase); err != nil {
 		r.base.metrics.errors.Add("start-up-params", 1)
 		return fmt.Errorf("sending startup to upstream: %v", err)
 	}
 
-	if err := interceptAuthAndInjectPassword(dbClient, clientConn, r.sessionUser, r.sessionPassword); err != nil {
+	if err := interceptAuthAndInjectPassword(dbClient, clientConn, r.sessionRole, r.sessionPassword); err != nil {
 		r.base.metrics.errors.Add("inject-credentials", 1)
 		return err
 	}
@@ -204,7 +204,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 	}
 
 	// Create audit file for this session
-	auditFile, err := createAuditFile(user, machine, string(r.dbType), r.dbHost, r.sessionDatabase, r.sessionUser)
+	auditFile, err := createAuditFile(user, machine, string(r.dbType), r.dbHost, r.sessionDatabase, r.sessionRole)
 	if err != nil {
 		r.base.metrics.errors.Add("audit-file-create-failed", 1)
 		return fmt.Errorf("failed to create audit file: %v", err)
@@ -243,13 +243,13 @@ func (r *pgWireRelay) seedCredentials(ctx context.Context) error {
 	creationStatements := dbplugin.Statements{
 		Commands: []string{
 			fmt.Sprintf(`CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';`),
-			fmt.Sprintf(`GRANT "%s" TO "{{name}}";`, r.sessionUser),
+			fmt.Sprintf(`GRANT "%s" TO "{{name}}";`, r.sessionRole),
 		},
 	}
 
 	usernameConfig := dbplugin.UsernameMetadata{
-		DisplayName: r.sessionUser,
-		RoleName:    r.sessionUser,
+		DisplayName: r.sessionRole,
+		RoleName:    r.sessionRole,
 	}
 
 	expiration := time.Now().Add(24 * time.Hour) // TODO should we disable expiration and just keep credentials for the duration of a session?
@@ -264,25 +264,25 @@ func (r *pgWireRelay) seedCredentials(ctx context.Context) error {
 	resp, err := r.plugin.NewUser(ctx, newUserReq)
 	if err != nil {
 		r.base.metrics.errors.Add("plugin-newuser-failed", 1)
-		return fmt.Errorf("failed to generate credentials for user %s: %v", r.sessionUser, err)
+		return fmt.Errorf("failed to generate credentials for role %s: %v", r.sessionRole, err)
 	}
 
-	r.sessionUser = resp.Username
+	r.sessionRole = resp.Username
 	r.sessionPassword = generatedPassword
 
 	return nil
 }
 
 func (r *pgWireRelay) revokeCredentials(ctx context.Context) {
-	if r.sessionUser == "" {
+	if r.sessionRole == "" {
 		return
 	}
 
 	deleteReq := dbplugin.DeleteUserRequest{
-		Username: r.sessionUser,
+		Username: r.sessionRole,
 		Statements: dbplugin.Statements{
 			Commands: []string{
-				fmt.Sprintf(`REVOKE "%s" FROM "{{name}}";`, r.sessionUser),
+				fmt.Sprintf(`REVOKE "%s" FROM "{{name}}";`, r.sessionRole),
 				`DROP ROLE IF EXISTS "{{name}}";`,
 			},
 		},
@@ -525,7 +525,7 @@ func buildPasswordBody(password string) []byte {
 	return b
 }
 
-func interceptAuthAndInjectPassword(dbConn, clientConn net.Conn, sessionUser, sessionPassword string) error {
+func interceptAuthAndInjectPassword(dbConn, clientConn net.Conn, sessionRole, sessionPassword string) error {
 	// 1) read upstream message (should be 'R')
 	msgType, body, err := readMessage(dbConn)
 	if err != nil {
@@ -561,7 +561,7 @@ func interceptAuthAndInjectPassword(dbConn, clientConn net.Conn, sessionUser, se
 		}
 		var salt [4]byte
 		copy(salt[:], body[4:8])
-		resp := md5Response(sessionPassword, sessionUser, salt)
+		resp := md5Response(sessionPassword, sessionRole, salt)
 		if err := writeMessage(dbConn, 'p', buildPasswordBody(resp)); err != nil {
 			return fmt.Errorf("send upstream md5 pw: %w", err)
 		}
@@ -598,9 +598,9 @@ func interceptAuthAndInjectPassword(dbConn, clientConn net.Conn, sessionUser, se
 }
 
 // md5Response computes the md5 response string for Postgres md5 auth:
-// result = "md5" + hex(md5( hex(md5(password+username)) + salt ))
-func md5Response(password, username string, salt [4]byte) string {
-	h1 := md5.Sum([]byte(password + username))
+// result = "md5" + hex(md5( hex(md5(password+role)) + salt ))
+func md5Response(password, role string, salt [4]byte) string {
+	h1 := md5.Sum([]byte(password + role))
 	h1hex := hex.EncodeToString(h1[:])
 	h2inp := append([]byte(h1hex), salt[:]...)
 	h2 := md5.Sum(h2inp)
@@ -744,7 +744,7 @@ func copyAndDetectEntryFinished(dst io.Writer, src io.Reader, entryFinished chan
 	return written, nil
 }
 
-// extractQueryText parses PostgreSQL protocol messages and extracts query text
+// extractQueryText parses Postgres protocol messages and extracts query text
 func extractQueryText(data []byte) string {
 	var queries []string
 	offset := 0

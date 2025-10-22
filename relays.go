@@ -18,7 +18,7 @@ type dbCapability struct {
 
 type impersonateSchema struct {
 	Databases []string `json:"databases"`
-	Users     []string `json:"users"`
+	Roles     []string `json:"roles"`
 }
 
 // Relay is used to proxy connections from Tailscale nodes to a database server.
@@ -37,7 +37,7 @@ type Relay interface {
 	initPlugin() error
 	// hasAccess checks whether the given Tailscale identity is authorized to access the database
 	// according to the grants defined in the tailnet policy file.
-	hasAccess(user, machine, dbType, sessionDB, sessionUser string, capabilities []tailcfg.RawMessage) (bool, error)
+	hasAccess(user, machine, dbType, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error)
 	// seedCredentials generates or fetches appropriate credentials to connect to the database
 	// based on the user and database requested by the client.
 	seedCredentials(context.Context) error
