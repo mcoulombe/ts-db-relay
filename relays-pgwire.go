@@ -31,11 +31,12 @@ var (
 	plaintextStart = [8]byte{0, 0, 0, 86, 0, 3, 0, 0}
 )
 
-var _ Relay = (*postgresRelay)(nil)
+var _ Relay = (*pgWireRelay)(nil)
 
-type postgresRelay struct {
+type pgWireRelay struct {
 	base
 
+	dbType         DBType
 	dbAddr         string
 	dbHost         string
 	dbPort         string
@@ -49,51 +50,49 @@ type postgresRelay struct {
 	sessionPassword string
 }
 
-func newPostgresRelay(dbAddr, dbCAPath, dbAdminUser, dbAdminPass string, tsClient *local.Client) (*postgresRelay, error) {
-	dbHost, dbPort, err := net.SplitHostPort(dbAddr)
+func newPGWireRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay, error) {
+	dbHost, dbPort, err := net.SplitHostPort(dbCfg.Address)
 	if err != nil {
 		return nil, err
 	}
 
-	dbCA, err := os.ReadFile(dbCAPath)
+	dbCA, err := os.ReadFile(dbCfg.CAFile)
 	if err != nil {
 		return nil, err
 	}
 	dbCertPool := x509.NewCertPool()
 	if !dbCertPool.AppendCertsFromPEM(dbCA) {
-		return nil, fmt.Errorf("invalid CA cert in %q", dbCAPath)
+		return nil, fmt.Errorf("invalid CA cert in %q", dbCfg.CAFile)
 	}
 	downstreamCert, err := mkSelfSigned(dbHost)
 	if err != nil {
 		return nil, err
 	}
 
-	r := &postgresRelay{
-		dbAddr:         dbAddr,
+	r := &pgWireRelay{
+		dbType:         dbCfg.Type,
+		dbAddr:         dbCfg.Address,
 		dbHost:         dbHost,
 		dbPort:         dbPort,
-		dbAdminUser:    dbAdminUser,
-		dbAdminPass:    dbAdminPass,
+		dbAdminUser:    dbCfg.AdminUser,
+		dbAdminPass:    dbCfg.AdminPassword,
 		dbCertPool:     dbCertPool,
 		downstreamCert: []tls.Certificate{downstreamCert},
 	}
 
 	r.base = base{
+		initPlugin: r.initPlugin,
+		serve:      r.serve,
+		tsClient:   tsClient,
 		metrics: &relayMetrics{
 			errors: metrics.LabelMap{Label: "kind"},
 		},
-		tsClient: tsClient,
-		serve:    r.serve,
-	}
-
-	if err := r.initPlugin(); err != nil {
-		return nil, err
 	}
 
 	return r, nil
 }
 
-func (r *postgresRelay) initPlugin() error {
+func (r *pgWireRelay) initPlugin() error {
 	pluginInterface, err := postgresql.New()
 	if err != nil {
 		return fmt.Errorf("failed to create PostgreSQL plugin: %v", err)
@@ -121,7 +120,7 @@ func (r *postgresRelay) initPlugin() error {
 	return nil
 }
 
-func (r *postgresRelay) serve(tsConn net.Conn) error {
+func (r *pgWireRelay) serve(tsConn net.Conn) error {
 	defer tsConn.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -172,7 +171,7 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
-	allowed, err := r.hasAccess(user, machine, "postgres", r.sessionDatabase, r.sessionUser, capabilities)
+	allowed, err := r.hasAccess(user, machine, string(r.dbType), r.sessionDatabase, r.sessionUser, capabilities)
 	if err != nil {
 		r.base.metrics.errors.Add("authentication", 1)
 		return err
@@ -204,7 +203,7 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	}
 
 	// Create audit file for this session
-	auditFile, err := createAuditFile(user, machine, "postgres", r.dbHost, r.sessionDatabase, r.sessionUser)
+	auditFile, err := createAuditFile(user, machine, string(r.dbType), r.dbHost, r.sessionDatabase, r.sessionUser)
 	if err != nil {
 		r.base.metrics.errors.Add("audit-file-create-failed", 1)
 		return fmt.Errorf("failed to create audit file: %v", err)
@@ -232,7 +231,7 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	return nil
 }
 
-func (r *postgresRelay) seedCredentials(ctx context.Context) error {
+func (r *pgWireRelay) seedCredentials(ctx context.Context) error {
 	passwordBytes := make([]byte, 32)
 	if _, err := rand.Read(passwordBytes); err != nil {
 		r.base.metrics.errors.Add("password-generation-failed", 1)
@@ -544,6 +543,7 @@ func interceptAuthAndInjectPassword(dbConn, clientConn net.Conn, sessionUser, se
 		if err := writeMessage(dbConn, 'p', buildPasswordBody(resp)); err != nil {
 			return fmt.Errorf("send upstream md5 pw: %w", err)
 		}
+	// TODO support other auth types such as SCRAM
 	default:
 		return fmt.Errorf("unsupported upstream auth type %d", authType)
 	}
@@ -668,7 +668,7 @@ func copyAndDetectEntryFinished(dst io.Writer, src io.Reader, entryFinished chan
 
 			// Check for ReadyForQuery messages in the accumulated buffer
 			for msgBuf.Len() >= 5 {
-				// PostgreSQL message format: type (1 byte) + length (4 bytes) + body
+				// Postgres message format: type (1 byte) + length (4 bytes) + body
 				msgType := msgBuf.Bytes()[0]
 				if msgBuf.Len() < 5 {
 					break

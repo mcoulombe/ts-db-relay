@@ -52,14 +52,7 @@ func main() {
 		log.Fatalf("unable to instantiate Tailscale Local tsClient: %v", err)
 	}
 
-	relay, err := NewRelay(
-		DBType(config.Database.Type),
-		config.Database.Address,
-		config.Database.CAFile,
-		config.Database.AdminUser,
-		config.Database.AdminPassword,
-		tsClient,
-	)
+	relay, err := NewRelay(&config.Database, tsClient)
 	if err != nil {
 		log.Fatal(err)
 	}
