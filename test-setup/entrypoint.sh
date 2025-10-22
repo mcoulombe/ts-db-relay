@@ -5,6 +5,14 @@ export PATH="/usr/lib/postgresql/13/bin:$PATH"
 
 PGDATA="/var/lib/postgresql/data"
 
+# Remove existing database to start fresh on each run
+echo "Checking Postgres data directory..."
+if [ -d "$PGDATA" ] && [ -n "$(ls -A $PGDATA 2>/dev/null)" ]; then
+    echo "Cleaning up existing Postgres data directory..."
+    rm -rf "$PGDATA"/*
+    echo "Postgres data directory cleaned."
+fi
+
 # Ensure PGDATA directory exists and has correct permissions
 mkdir -p "$PGDATA"
 chown -R postgres:postgres "$PGDATA"
@@ -67,6 +75,9 @@ chmod 644 /var/lib/certs/server.crt /var/lib/certs/ca.crt /var/lib/certs/cert.co
 
 echo "TLS certificates generated with SANs."
 
+echo "Initializing Postgres database..."
+su postgres -c "initdb -D $PGDATA"
+
 # Write a secure pg_hba.conf that forces password auth and SSL
 cat > "$PGDATA/pg_hba.conf" <<'EOF'
 local   all             postgres                                trust
@@ -78,12 +89,6 @@ EOF
 
 # Ensure correct permissions
 chown postgres:postgres "$PGDATA/pg_hba.conf"
-
-# Initialize database if empty
-if [ ! -s "$PGDATA/PG_VERSION" ]; then
-    echo "Initializing Postgres database..."
-    su postgres -c "initdb -D $PGDATA"
-fi
 
 # Configure Postgres for SSL
 echo "Configuring Postgres SSL settings..."
