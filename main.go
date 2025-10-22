@@ -36,7 +36,6 @@ func main() {
 		log.Print("Note: you need to run this with TS_AUTHKEY=... the first time, to join your tailnet of choice.")
 	}
 
-	// Set default control URL if not specified
 	controlURL := config.Tailscale.ControlURL
 	if controlURL == "" {
 		controlURL = "https://login.tailscale.com/"

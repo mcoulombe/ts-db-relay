@@ -6,14 +6,13 @@ import (
 	"net"
 
 	"tailscale.com/metrics"
+	"tailscale.com/tailcfg"
 )
 
 const tsDBRelayCapability = "tailscale.test/cap/ts-db-relay"
 
-type grantCapSchema struct {
-	Postgres postgresCapSchema `json:"postgres"`
-}
-type postgresCapSchema struct {
+// dbCapability represents the access grants for a specific database type
+type dbCapability struct {
 	Impersonate impersonateSchema `json:"impersonate"`
 }
 
@@ -36,14 +35,12 @@ type Relay interface {
 
 	// initPlugin initializes the database plugin that manages users and credentials
 	initPlugin() error
-	// hasAccess checks whether the given Tailscale connection is authorized to access the database
+	// hasAccess checks whether the given Tailscale identity is authorized to access the database
 	// according to the grants defined in the tailnet policy file.
-	hasAccess(context.Context, net.Conn) (bool, error)
+	hasAccess(user, machine, dbType, sessionDB, sessionUser string, capabilities []tailcfg.RawMessage) (bool, error)
 	// seedCredentials generates or fetches appropriate credentials to connect to the database
 	// based on the user and database requested by the client.
 	seedCredentials(context.Context) error
-	// audit logs the data received from the client connection for auditing purposes.
-	audit(context.Context, net.Conn) error
 }
 
 // relayMetrics holds metrics about the relay's operation

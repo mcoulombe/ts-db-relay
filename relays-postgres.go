@@ -12,13 +12,11 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -167,7 +165,14 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	r.sessionUser = params["user"]
 	r.sessionDatabase = params["database"]
 
-	allowed, err := r.hasAccess(ctx, tsConn)
+	// Verify access based on Tailscale identity and capabilities
+	user, machine, capabilities, err := r.getClientIdentity(ctx, tsConn)
+	if err != nil {
+		r.base.metrics.errors.Add("authentication", 1)
+		return err
+	}
+
+	allowed, err := r.hasAccess(user, machine, "postgres", r.sessionDatabase, r.sessionUser, capabilities)
 	if err != nil {
 		r.base.metrics.errors.Add("authentication", 1)
 		return err
@@ -177,6 +182,7 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
+	// Tailnet user is allowed, generate & authenticate via an ephemeral user for the session
 	err = r.seedCredentials(ctx)
 	if err != nil {
 		r.base.metrics.errors.Add("seed-credentials", 1)
@@ -198,19 +204,18 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 	}
 
 	// Create audit file for this session
-	auditFile, err := r.createAuditFile(ctx, tsConn, r.dbHost, r.sessionDatabase, r.sessionUser)
+	auditFile, err := createAuditFile(user, machine, "postgres", r.dbHost, r.sessionDatabase, r.sessionUser)
 	if err != nil {
 		r.base.metrics.errors.Add("audit-file-create-failed", 1)
 		return fmt.Errorf("failed to create audit file: %v", err)
 	}
 	defer auditFile.Close()
 
-	// Client has access and relay impersonated a database user, just relay the traffic as long as the connection is alive
+	// Impersonation all set, just relay the traffic as long as the connection is alive
 	r.base.metrics.startedSessions.Add(1)
 	r.base.metrics.activeSessions.Add(1)
 	defer r.base.metrics.activeSessions.Add(-1)
 
-	// Channel to signal when an audit entry is complete and should be flushed
 	entryFinished := make(chan struct{}, 10)
 	errc := make(chan error, 1)
 	go func() {
@@ -218,62 +223,13 @@ func (r *postgresRelay) serve(tsConn net.Conn) error {
 		errc <- err
 	}()
 	go func() {
-		_, err := copyAndDetectReadyForQuery(clientConn, dbClient, entryFinished)
+		_, err := copyAndDetectEntryFinished(clientConn, dbClient, entryFinished)
 		errc <- err
 	}()
 	if err := <-errc; err != nil {
 		return fmt.Errorf("session terminated with error: %v", err)
 	}
 	return nil
-}
-
-func (r *postgresRelay) hasAccess(ctx context.Context, conn net.Conn) (bool, error) {
-	user, machine, capabilities, err := r.getClientIdentity(ctx, conn)
-	if err != nil {
-		return false, err
-	}
-
-	// Check if the client has access to the requested user and database through Tailscale capabilities
-	if capabilities == nil {
-		r.base.metrics.errors.Add("no-ts-db-relay-capability", 1)
-		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
-	}
-
-	for _, capability := range capabilities {
-		var grantCap grantCapSchema
-
-		if err := json.Unmarshal([]byte(capability), &grantCap); err != nil {
-			r.base.metrics.errors.Add("capability-parse-error", 1)
-			return false, fmt.Errorf("failed to parse capability value: %v", err)
-		}
-
-		userAllowed := false
-		for _, allowedUser := range grantCap.Postgres.Impersonate.Users {
-			if allowedUser == r.sessionUser {
-				userAllowed = true
-				break
-			}
-		}
-		if !userAllowed {
-			continue
-		}
-
-		databaseAllowed := false
-		for _, allowedDB := range grantCap.Postgres.Impersonate.Databases {
-			if allowedDB == r.sessionDatabase {
-				databaseAllowed = true
-				break
-			}
-		}
-		if !databaseAllowed {
-			continue
-		}
-
-		return true, nil
-	}
-
-	r.base.metrics.errors.Add("not-allowed-to-impersonate", 1)
-	return false, fmt.Errorf("user %q is not allowed to access database %q as user %q", user, r.sessionDatabase, r.sessionUser)
 }
 
 func (r *postgresRelay) seedCredentials(ctx context.Context) error {
@@ -315,11 +271,6 @@ func (r *postgresRelay) seedCredentials(ctx context.Context) error {
 	r.sessionPassword = generatedPassword
 
 	return nil
-}
-
-func (r *postgresRelay) audit(ctx context.Context, conn net.Conn) error {
-	//TODO implement me
-	panic("implement me")
 }
 
 func mkSelfSigned(hostname string) (tls.Certificate, error) {
@@ -634,35 +585,6 @@ func md5Response(password, username string, salt [4]byte) string {
 	return "md5" + hex.EncodeToString(h2[:])
 }
 
-func (r *postgresRelay) createAuditFile(ctx context.Context, conn net.Conn, dbHost, database, dbUser string) (*os.File, error) {
-	// Get client identity for audit file naming
-	user, machine, _, err := r.getClientIdentity(ctx, conn)
-	if err != nil {
-		r.base.metrics.errors.Add("audit-identity-failed", 1)
-		return nil, fmt.Errorf("failed to get client identity for audit: %v", err)
-	}
-
-	// Create unique audit file for this session
-	// Format: {timestamp}-{dbUser}.log
-	timestamp := time.Now().Format("20060102-150405")
-	auditFilename := fmt.Sprintf("%s-%s.log", timestamp, dbUser)
-	auditPath := filepath.Join("/var/lib/audits", auditFilename)
-
-	auditFile, err := os.Create(auditPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create audit file: %v", err)
-	}
-
-	// Write session header to audit file
-	fmt.Fprintf(auditFile, "SESSION START: %s\n", time.Now().Format(time.RFC3339))
-	fmt.Fprintf(auditFile, "Client: %s@%s\n", user, machine)
-	fmt.Fprintf(auditFile, "Database: postgres://%s/%s\n", dbHost, database)
-	fmt.Fprintf(auditFile, "DB User: %s\n", dbUser)
-	fmt.Fprintf(auditFile, "--- DATA START ---\n")
-
-	return auditFile, nil
-}
-
 func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, entryFinished <-chan struct{}) (int64, error) {
 	var written int64
 	var auditBuffer bytes.Buffer
@@ -731,9 +653,9 @@ func auditCopy(auditFile *os.File, dst io.Writer, src io.Reader, entryFinished <
 	}
 }
 
-// copyAndDetectReadyForQuery copies data from src to dst and signals on the channel
+// copyAndDetectEntryFinished copies data from src to dst and signals on the channel
 // whenever a ReadyForQuery ('Z') message is detected from the PostgreSQL server
-func copyAndDetectReadyForQuery(dst io.Writer, src io.Reader, entryFinished chan<- struct{}) (int64, error) {
+func copyAndDetectEntryFinished(dst io.Writer, src io.Reader, entryFinished chan<- struct{}) (int64, error) {
 	var written int64
 	buf := make([]byte, 32*1024)
 	msgBuf := bytes.Buffer{}
@@ -798,24 +720,6 @@ func copyAndDetectReadyForQuery(dst io.Writer, src io.Reader, entryFinished chan
 		}
 	}
 	return written, nil
-}
-
-// flushAuditBuffer writes the accumulated audit buffer to file as a single entry
-func flushAuditBuffer(auditFile *os.File, buffer *bytes.Buffer, startTime time.Time) {
-	if buffer.Len() == 0 {
-		return
-	}
-
-	// Extract query text from PostgreSQL protocol messages
-	// Format: 'Q' (1 byte) + length (4 bytes) + query string + null terminator
-	data := buffer.Bytes()
-	queryText := extractQueryText(data)
-
-	if queryText != "" {
-		fmt.Fprintf(auditFile, "[%s]: %s\n", startTime.Format("15:04:05.000"), queryText)
-	}
-
-	buffer.Reset()
 }
 
 // extractQueryText parses PostgreSQL protocol messages and extracts query text

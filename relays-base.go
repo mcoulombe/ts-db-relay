@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"expvar"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ import (
 type base struct {
 	// serve is the protocol-specific serve function that handles a single connection
 	serve func(net.Conn) error
+
 	// metrics holds relay operation metrics
 	metrics *relayMetrics
 	// plugin is the database plugin used to manage users and credentials
@@ -82,4 +84,53 @@ func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, st
 	}
 
 	return user, machine, whois.CapMap[tailcfg.PeerCapability(tsDBRelayCapability)], nil
+}
+
+// hasAccess checks if the given Tailscale identity is authorized to access the specified database
+// according to the grants defined in the tailnet policy file.
+func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionUser string, capabilities []tailcfg.RawMessage) (bool, error) {
+	if capabilities == nil {
+		b.metrics.errors.Add("no-ts-db-relay-capability", 1)
+		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
+	}
+
+	for _, capability := range capabilities {
+		var grantCap map[string]dbCapability
+		if err := json.Unmarshal([]byte(capability), &grantCap); err != nil {
+			b.metrics.errors.Add("capability-parse-error", 1)
+			return false, fmt.Errorf("failed to parse capability value: %v", err)
+		}
+
+		dbCap, exists := grantCap[dbType]
+		if !exists {
+			continue
+		}
+
+		userAllowed := false
+		for _, allowedUser := range dbCap.Impersonate.Users {
+			if allowedUser == sessionUser {
+				userAllowed = true
+				break
+			}
+		}
+		if !userAllowed {
+			continue
+		}
+
+		databaseAllowed := false
+		for _, allowedDB := range dbCap.Impersonate.Databases {
+			if allowedDB == sessionDB {
+				databaseAllowed = true
+				break
+			}
+		}
+		if !databaseAllowed {
+			continue
+		}
+
+		return true, nil
+	}
+
+	b.metrics.errors.Add("not-allowed-to-impersonate", 1)
+	return false, fmt.Errorf("user %q is not allowed to access database %q as user %q", user, sessionDB, sessionUser)
 }
