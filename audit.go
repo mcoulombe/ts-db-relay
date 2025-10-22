@@ -14,7 +14,9 @@ func createAuditFile(user, machine, dbType, dbHost, database, dbUser string) (*o
 	// Format: {timestamp}-{dbUser}.log
 	timestamp := time.Now().Format("20060102-150405")
 	auditFilename := fmt.Sprintf("%s-%s.log", timestamp, dbUser)
-	auditPath := filepath.Join("/var/lib/audits", auditFilename)
+
+	auditDir := fmt.Sprintf("/var/lib/%s-audits", dbType)
+	auditPath := filepath.Join(auditDir, auditFilename)
 
 	auditFile, err := os.Create(auditPath)
 	if err != nil {

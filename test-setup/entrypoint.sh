@@ -18,22 +18,26 @@ mkdir -p "$PGDATA"
 chown -R postgres:postgres "$PGDATA"
 chmod 700 "$PGDATA"
 
-# Ensure ts-state directory exists and has correct permissions
-mkdir -p /var/lib/ts-state
-chmod 755 /var/lib/ts-state
+# Ensure postgres tailscale state directory exists and has correct permissions
+mkdir -p /var/lib/postgres-ts-state
+chmod 755 /var/lib/postgres-ts-state
 
 # Create certificates directory
-mkdir -p /var/lib/certs
-chmod 755 /var/lib/certs
+mkdir -p /var/lib/postgres-certs
+chmod 755 /var/lib/postgres-certs
 
-# Generate TLS certificates
-echo "Generating TLS certificates..."
+# Create audits directory
+mkdir -p /var/lib/postgres-audits
+chmod 755 /var/lib/postgres-audits
+
+# Generate Postgres TLS certificates
+echo "Generating Postgres TLS certificates..."
 
 # Generate private key
-openssl genrsa -out /var/lib/certs/server.key 2048
+openssl genrsa -out /var/lib/postgres-certs/server.key 2048
 
 # Create certificate config with SANs
-cat > /var/lib/certs/cert.conf <<EOF
+cat > /var/lib/postgres-certs/cert.conf <<EOF
 [req]
 default_bits = 2048
 prompt = no
@@ -62,18 +66,18 @@ IP.2 = ::1
 EOF
 
 # Generate certificate with SANs
-openssl req -new -x509 -key /var/lib/certs/server.key -out /var/lib/certs/server.crt -days 365 \
-    -config /var/lib/certs/cert.conf -extensions v3_req
+openssl req -new -x509 -key /var/lib/postgres-certs/server.key -out /var/lib/postgres-certs/server.crt -days 365 \
+    -config /var/lib/postgres-certs/cert.conf -extensions v3_req
 
 # Copy certificate as CA file for client verification
-cp /var/lib/certs/server.crt /var/lib/certs/ca.crt
+cp /var/lib/postgres-certs/server.crt /var/lib/postgres-certs/ca.crt
 
 # Set proper permissions
-chown -R postgres:postgres /var/lib/certs
-chmod 600 /var/lib/certs/server.key
-chmod 644 /var/lib/certs/server.crt /var/lib/certs/ca.crt /var/lib/certs/cert.conf
+chown -R postgres:postgres /var/lib/postgres-certs
+chmod 600 /var/lib/postgres-certs/server.key
+chmod 644 /var/lib/postgres-certs/server.crt /var/lib/postgres-certs/ca.crt /var/lib/postgres-certs/cert.conf
 
-echo "TLS certificates generated with SANs."
+echo "Postgres TLS certificates generated with SANs."
 
 echo "Initializing Postgres database..."
 su postgres -c "initdb -D $PGDATA"
@@ -96,9 +100,9 @@ cat >> "$PGDATA/postgresql.conf" <<'EOF'
 
 # SSL Configuration
 ssl = on
-ssl_cert_file = '/var/lib/certs/server.crt'
-ssl_key_file = '/var/lib/certs/server.key'
-ssl_ca_file = '/var/lib/certs/ca.crt'
+ssl_cert_file = '/var/lib/postgres-certs/server.crt'
+ssl_key_file = '/var/lib/postgres-certs/server.key'
+ssl_ca_file = '/var/lib/postgres-certs/ca.crt'
 EOF
 
 chown postgres:postgres "$PGDATA/postgresql.conf"
@@ -115,28 +119,28 @@ done
 echo "Postgres is ready!"
 
 # Generate random admin password
-echo "Generating admin credentials..."
-export DB_ADMIN_USER="relay_admin"
-export DB_ADMIN_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
-echo "Admin user: $DB_ADMIN_USER"
+echo "Generating Postgres admin credentials..."
+export POSTGRES_ADMIN_USER="relay_admin"
+export POSTGRES_ADMIN_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+echo "Postgres Admin user: $POSTGRES_ADMIN_USER"
 
 # Create admin user with CREATEROLE and CREATEDB privileges
-echo "Creating/updating admin user..."
+echo "Creating/updating Postgres admin user..."
 psql -v ON_ERROR_STOP=1 -U postgres <<-EOSQL
 DO
 \$do\$
 BEGIN
    IF NOT EXISTS (
-      SELECT FROM pg_catalog.pg_roles WHERE rolname = '$DB_ADMIN_USER'
+      SELECT FROM pg_catalog.pg_roles WHERE rolname = '$POSTGRES_ADMIN_USER'
    ) THEN
-      CREATE ROLE $DB_ADMIN_USER WITH LOGIN CREATEROLE CREATEDB PASSWORD '$DB_ADMIN_PASSWORD';
+      CREATE ROLE $POSTGRES_ADMIN_USER WITH LOGIN CREATEROLE CREATEDB PASSWORD '$POSTGRES_ADMIN_PASSWORD';
    ELSE
-      ALTER ROLE $DB_ADMIN_USER WITH LOGIN CREATEROLE CREATEDB PASSWORD '$DB_ADMIN_PASSWORD';
+      ALTER ROLE $POSTGRES_ADMIN_USER WITH LOGIN CREATEROLE CREATEDB PASSWORD '$POSTGRES_ADMIN_PASSWORD';
    END IF;
 END
 \$do\$;
 EOSQL
-echo "Admin user '$DB_ADMIN_USER' is ready."
+echo "Postgres admin user '$POSTGRES_ADMIN_USER' is ready."
 
 # Create or update test user
 echo "Creating/updating test user..."
@@ -175,14 +179,14 @@ cat > /etc/ts-db-relay/config.json <<EOF
   "tailscale": {
     "control_url": "$TS_SERVER",
     "hostname": "postgres-db",
-    "state_dir": "/var/lib/ts-state"
+    "state_dir": "/var/lib/postgres-ts-state"
   },
   "database": {
     "type": "postgres",
     "address": "localhost:5432",
-    "ca_file": "/var/lib/certs/ca.crt",
-    "admin_user": "$DB_ADMIN_USER",
-    "admin_password": "$DB_ADMIN_PASSWORD"
+    "ca_file": "/var/lib/postgres-certs/ca.crt",
+    "admin_user": "$POSTGRES_ADMIN_USER",
+    "admin_password": "$POSTGRES_ADMIN_PASSWORD"
   },
   "relay": {
     "port": 5432,
@@ -199,37 +203,6 @@ echo "Starting DB relay..."
 TS_AUTHKEY=$TS_AUTHKEY \
 /usr/local/bin/ts-db-relay \
 --config=/etc/ts-db-relay/config.json \
-&
-
-# Create config for dummy relay
-cat > /etc/ts-db-relay/dummy-config.json <<EOF
-{
-  "tailscale": {
-    "control_url": "$TS_SERVER",
-    "hostname": "dummy",
-    "state_dir": "/var/lib/ts-dummy-state"
-  },
-  "database": {
-    "type": "postgres",
-    "address": "localhost:5432",
-    "ca_file": "/var/lib/certs/ca.crt",
-    "admin_user": "$DB_ADMIN_USER",
-    "admin_password": "$DB_ADMIN_PASSWORD"
-  },
-  "relay": {
-    "port": 5433,
-    "debug_port": 81
-  }
-}
-EOF
-
-chmod 600 /etc/ts-db-relay/dummy-config.json
-
-# Start a dummy relay to prove multiple can live side by side
-echo "Starting dummy DB relay..."
-TS_AUTHKEY=$TS_AUTHKEY \
-/usr/local/bin/ts-db-relay \
---config=/etc/ts-db-relay/dummy-config.json \
 &
 
 # Keep container alive

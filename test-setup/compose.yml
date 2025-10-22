@@ -12,11 +12,10 @@ services:
       - TSNET_FORCE_LOGIN=1
     volumes:
       - ../data/postgres:/var/lib/postgresql/data
-      - ../data/ts-state:/var/lib/ts-state
-      - ../data/ts-dummy-state:/var/lib/ts-dummy-state
-      - ../data/certs:/var/lib/certs
+      - ../data/postgres-ts-state:/var/lib/postgres-ts-state
+      - ../data/postgres-certs:/var/lib/postgres-certs
+      - ../data/postgres-audits:/var/lib/postgres-audits
       - ../data/creds:/var/lib/creds
-      - ../data/audits:/var/lib/audits
       - ../cmd/ts-db-relay.exe:/usr/local/bin/ts-db-relay
     cap_add:
       - NET_ADMIN
