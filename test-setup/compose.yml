@@ -15,7 +15,10 @@ services:
       - ../data/postgres-ts-state:/var/lib/postgres-ts-state
       - ../data/postgres-certs:/var/lib/postgres-certs
       - ../data/postgres-audits:/var/lib/postgres-audits
-      - ../data/creds:/var/lib/creds
+      - ../data/cockroachdb:/var/lib/cockroachdb/data
+      - ../data/cockroachdb-ts-state:/var/lib/cockroachdb-ts-state
+      - ../data/cockroachdb-certs:/var/lib/cockroachdb-certs
+      - ../data/cockroachdb-audits:/var/lib/cockroachdb-audits
       - ../cmd/ts-db-relay.exe:/usr/local/bin/ts-db-relay
     cap_add:
       - NET_ADMIN
