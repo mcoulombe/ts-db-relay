@@ -48,7 +48,7 @@ Note: setup from scratch in a new environment not tested yet. These steps likely
                            "postgres": {
                                "impersonate": {
                                    "databases": ["testdb"],
-                                   "users":     ["test"],
+                                   "roles":     ["test"],
                                },
                            },
                        },
