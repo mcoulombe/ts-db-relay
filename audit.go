@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// TODO POC using a local file, move to tsrecorder and investigate standard DB audit formats
 
 // createAuditFile creates a new audit log file for a database session
 func createAuditFile(user, machine, dbType, dbHost, database, dbUser string) (*os.File, error) {
@@ -33,18 +34,7 @@ func createAuditFile(user, machine, dbType, dbHost, database, dbUser string) (*o
 	return auditFile, nil
 }
 
-// flushAuditBuffer writes the accumulated audit buffer to file as a single entry
-func flushAuditBuffer(auditFile *os.File, buffer *bytes.Buffer, startTime time.Time) {
-	if buffer.Len() == 0 {
-		return
-	}
-
-	data := buffer.Bytes()
-	queryText := extractQueryText(data)
-
-	if queryText != "" {
-		fmt.Fprintf(auditFile, "[%s]: %s\n", startTime.Format("15:04:05.000"), queryText)
-	}
-
-	buffer.Reset()
+func auditQuery(auditFile *os.File, query string) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	fmt.Fprintf(auditFile, "[%s] %s\n", timestamp, query)
 }

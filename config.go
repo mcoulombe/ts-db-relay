@@ -52,26 +52,8 @@ func LoadConfig(path string) (*Config, error) {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
-	if c.Tailscale.StateDir == "" {
-		return fmt.Errorf("tailscale.state_dir is required")
-	}
-	if c.Relay.Port == 0 {
-		return fmt.Errorf("relay.port is required")
-	}
 	if c.Database.Type == "" {
 		return fmt.Errorf("database.type is required")
-	}
-	if c.Database.Address == "" {
-		return fmt.Errorf("database.address is required")
-	}
-	if c.Database.CAFile == "" {
-		return fmt.Errorf("database.ca_file is required")
-	}
-	if c.Database.AdminUser == "" {
-		return fmt.Errorf("database.admin_user is required")
-	}
-	if c.Database.AdminPassword == "" {
-		return fmt.Errorf("database.admin_password is required")
 	}
 	return nil
 }

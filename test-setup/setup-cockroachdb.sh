@@ -116,11 +116,11 @@ cat > /etc/ts-db-relay/cockroachdb-config.json <<EOF
 {
   "tailscale": {
     "control_url": "$TS_SERVER",
-    "hostname": "cockroachdb",
+    "hostname": "cockroachdb-db",
     "state_dir": "/var/lib/cockroachdb-ts-state"
   },
   "database": {
-    "type": "cockroachDB",
+    "type": "cockroachdb",
     "address": "localhost:26257",
     "ca_file": "/var/lib/cockroachdb-certs/ca.crt",
     "admin_user": "$COCKROACHDB_ADMIN_USER",

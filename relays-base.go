@@ -18,29 +18,20 @@ import (
 // base provides default implementations of common Relay methods.
 // It can be embedded in concrete relay implementations to avoid code duplication.
 type base struct {
-	// initPlugin is the protocol-specific plugin initialization function to manage session users and credentials
-	initPlugin func() error
 	// serve is the protocol-specific serve function that handles a single connection
 	serve func(net.Conn) error
 
 	// tsClient is the Tailscale client used for identity verification
 	tsClient *local.Client
+	// secretsEngine is the OpenBao plugin used to manage users and credentials
+	secretsEngine dbplugin.Database
 	// metrics holds relay operation metrics
 	metrics *relayMetrics
-	// plugin is the database plugin used to manage users and credentials
-	plugin dbplugin.Database
 }
 
 // Serve implements the default Serve method that listens for incoming connections
 // and delegates each connection to the serve function in a separate goroutine.
 func (b *base) Serve(tsListener net.Listener) error {
-	if b.plugin == nil { // TODO keep the initialization lazy or eager to fail early?
-		err := b.initPlugin()
-		if err != nil {
-			return fmt.Errorf("failed to initialize database plugin: %v", err)
-		}
-	}
-
 	for {
 		tsConn, err := tsListener.Accept()
 		if err != nil {

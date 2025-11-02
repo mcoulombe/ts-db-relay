@@ -11,7 +11,7 @@ type DBType string
 
 const (
 	DBTypePostgres  DBType = "postgres"
-	DBTypeCockroach        = "cockroachDB"
+	DBTypeCockroach        = "cockroachdb"
 )
 
 // NewRelay creates a new Relay implementation based on the database type
@@ -22,6 +22,6 @@ func NewRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (Relay, error) {
 	case DBTypeCockroach:
 		return newPGWireRelay(dbCfg, tsClient)
 	default:
-		return nil, fmt.Errorf("unsupported database type %q", dbCfg.Type)
+		return nil, fmt.Errorf("database type %q is not supported", dbCfg.Type)
 	}
 }

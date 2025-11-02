@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"expvar"
 	"net"
 
 	"tailscale.com/metrics"
-	"tailscale.com/tailcfg"
 )
 
 const tsDBRelayCapability = "tailscale.test/cap/ts-db-relay"
@@ -32,15 +30,6 @@ type Relay interface {
 	// Metrics returns metrics about the relay's operation which can be consulted on the debug endpoint.
 	// Useful for monitoring and debugging.
 	Metrics() expvar.Var
-
-	// initPlugin initializes the database plugin that manages users and credentials
-	initPlugin() error
-	// hasAccess checks whether the given Tailscale identity is authorized to access the database
-	// according to the grants defined in the tailnet policy file.
-	hasAccess(user, machine, dbType, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error)
-	// seedCredentials generates or fetches appropriate credentials to connect to the database
-	// based on the user and database requested by the client.
-	seedCredentials(context.Context) error
 }
 
 // relayMetrics holds metrics about the relay's operation
