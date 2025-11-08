@@ -149,58 +149,59 @@ DO
 \$do\$
 BEGIN
    IF NOT EXISTS (
-      SELECT FROM pg_catalog.pg_roles WHERE rolname = 'test'
+      SELECT FROM pg_catalog.pg_roles WHERE rolname = '$POSTGRES_USER'
    ) THEN
-      CREATE ROLE test WITH LOGIN PASSWORD 'Test4Sk8board';
+      CREATE ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$POSTGRES_PASSWORD';
    ELSE
-      ALTER ROLE test WITH PASSWORD 'Test4Sk8board';
+      ALTER ROLE $POSTGRES_USER WITH PASSWORD '$POSTGRES_PASSWORD';
    END IF;
 END
 \$do\$;
 EOSQL
-echo "User 'test' is ready."
+echo "User '$POSTGRES_USER' is ready."
 
-# Create or update testdb
-echo "Creating/updating test db..."
+# Create or update test database
+echo "Creating/updating test database..."
 psql -v ON_ERROR_STOP=1 -U postgres <<-EOSQL
-SELECT 'CREATE DATABASE testdb'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'testdb')\gexec
+SELECT 'CREATE DATABASE $POSTGRES_DB'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$POSTGRES_DB')\gexec
 EOSQL
-echo "Database 'testdb' is ready."
+echo "Database '$POSTGRES_DB' is ready."
 
 # Create config directory
-mkdir -p /etc/ts-db-relay
-chmod 755 /etc/ts-db-relay
+mkdir -p /etc/ts-db-connector
+chmod 755 /etc/ts-db-connector
 
 # Generate shared config file
-echo "Generating Postgres relay config file..."
-cat > /etc/ts-db-relay/postgres-config.json <<EOF
+echo "Generating Postgres connector config file..."
+cat > /etc/ts-db-connector/postgres-config.json <<EOF
 {
   "tailscale": {
     "control_url": "$TS_SERVER",
     "hostname": "postgres-db",
     "state_dir": "/var/lib/postgres-ts-state"
   },
+  "relay": {
+      "port": 5432,
+      "debug_port": 80
+  },
   "database": {
+    "name": "my-postgres-1",
     "type": "postgres",
     "address": "localhost:5432",
     "ca_file": "/var/lib/postgres-certs/ca.crt",
     "admin_user": "$POSTGRES_ADMIN_USER",
     "admin_password": "$POSTGRES_ADMIN_PASSWORD"
-  },
-  "relay": {
-    "port": 5432,
-    "debug_port": 80
   }
 }
 EOF
 
-chmod 600 /etc/ts-db-relay/postgres-config.json
-echo "Postgres relay config file created."
+chmod 600 /etc/ts-db-connector/postgres-config.json
+echo "Postgres connector config file created."
 
-# Start Postgres relay
-echo "Starting Postgres relay..."
-TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-relay --config=/etc/ts-db-relay/postgres-config.json &
-POSTGRES_RELAY_PID=$!
+# Start Postgres connector
+echo "Starting Postgres connector..."
+TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-connector --config=/etc/ts-db-connector/postgres-config.json &
+POSTGRES_CONNECTOR_PID=$!
 
-echo "Postgres setup complete. Relay PID: $POSTGRES_RELAY_PID"
+echo "Postgres setup complete. Connector PID: $POSTGRES_CONNECTOR_PID"

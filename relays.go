@@ -7,16 +7,18 @@ import (
 	"tailscale.com/metrics"
 )
 
-const tsDBRelayCapability = "tailscale.test/cap/ts-db-relay"
+const tsDBDatabaseCapability = "tailscale.test/cap/databases"
 
-// dbCapability represents the access grants for a specific database type
+// dbCapability represents the access grants for a specific database instance
 type dbCapability struct {
-	Impersonate impersonateSchema `json:"impersonate"`
+	Engine string         `json:"engine,omitzero"`
+	Port   string         `json:"port,omitzero"`
+	Access []accessSchema `json:"access,omitzero"`
 }
 
-type impersonateSchema struct {
-	Databases []string `json:"databases"`
-	Roles     []string `json:"roles"`
+type accessSchema struct {
+	Databases []string `json:"databases,omitzero"`
+	Roles     []string `json:"roles,omitzero"`
 }
 
 // Relay is used to proxy connections from Tailscale nodes to a database server.

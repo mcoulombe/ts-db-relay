@@ -83,15 +83,15 @@ func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, st
 		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
 	}
 
-	return user, machine, whois.CapMap[tailcfg.PeerCapability(tsDBRelayCapability)], nil
+	return user, machine, whois.CapMap[tailcfg.PeerCapability(tsDBDatabaseCapability)], nil
 }
 
 // hasAccess checks if the given Tailscale identity is authorized to access the specified database
 // according to the grants defined in the tailnet policy file.
-func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
+func (b *base) hasAccess(user, machine, dbEngine, dbPort, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
 	if capabilities == nil {
-		b.metrics.errors.Add("no-ts-db-relay-capability", 1)
-		return false, fmt.Errorf("user %q on machine %q does not have ts-db-relay capability", user, machine)
+		b.metrics.errors.Add("no-ts-db-database-capability", 1)
+		return false, fmt.Errorf("user %q on machine %q does not have ts-db-database capability", user, machine)
 	}
 
 	for _, capability := range capabilities {
@@ -101,34 +101,51 @@ func (b *base) hasAccess(user, machine, dbType, sessionDB, sessionRole string, c
 			return false, fmt.Errorf("failed to parse capability value: %v", err)
 		}
 
-		dbCap, exists := grantCap[dbType]
-		if !exists {
-			continue
-		}
+		// Iterate through all database identifiers (e.g., "my-postgres-1")
+		for _, dbCap := range grantCap {
+			// Check if the engine matches the requested database engine
+			if dbCap.Engine != dbEngine {
+				continue
+			}
 
-		roleAllowed := false
-		for _, allowedRole := range dbCap.Impersonate.Roles {
-			if allowedRole == sessionRole {
-				roleAllowed = true
-				break
+			// Determine the port to check against (use default if not specified)
+			capPort := dbCap.Port
+			if capPort == "" {
+				capPort = DBEngine(dbCap.Engine).DefaultPort()
+			}
+
+			// Check if the port matches the requested port
+			if capPort != dbPort {
+				continue
+			}
+
+			// Check each access rule in the Access array
+			for _, accessRule := range dbCap.Access {
+				roleAllowed := false
+				for _, allowedRole := range accessRule.Roles {
+					if allowedRole == sessionRole {
+						roleAllowed = true
+						break
+					}
+				}
+				if !roleAllowed {
+					continue
+				}
+
+				databaseAllowed := false
+				for _, allowedDB := range accessRule.Databases {
+					if allowedDB == sessionDB {
+						databaseAllowed = true
+						break
+					}
+				}
+				if !databaseAllowed {
+					continue
+				}
+
+				return true, nil
 			}
 		}
-		if !roleAllowed {
-			continue
-		}
-
-		databaseAllowed := false
-		for _, allowedDB := range dbCap.Impersonate.Databases {
-			if allowedDB == sessionDB {
-				databaseAllowed = true
-				break
-			}
-		}
-		if !databaseAllowed {
-			continue
-		}
-
-		return true, nil
 	}
 
 	b.metrics.errors.Add("not-allowed-to-impersonate", 1)

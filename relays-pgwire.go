@@ -30,7 +30,7 @@ var _ Relay = (*pgWireRelay)(nil)
 type pgWireRelay struct {
 	base
 
-	dbType         DBType
+	dbEngine       DBEngine
 	dbAddr         string
 	dbHost         string
 	dbPort         string
@@ -65,7 +65,7 @@ func newPGWireRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay
 	}
 
 	r := &pgWireRelay{
-		dbType:         dbCfg.Type,
+		dbEngine:       dbCfg.Type,
 		dbAddr:         dbCfg.Address,
 		dbHost:         dbHost,
 		dbPort:         dbPort,
@@ -160,7 +160,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
-	allowed, err := r.hasAccess(user, machine, string(r.dbType), r.sessionDatabase, r.targetRole, capabilities)
+	allowed, err := r.hasAccess(user, machine, string(r.dbEngine), r.dbPort, r.sessionDatabase, r.targetRole, capabilities)
 	if err != nil {
 		r.base.metrics.errors.Add("authentication", 1)
 		return err
@@ -190,7 +190,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 	}
 	defer dbConn.Close()
 
-	auditFile, err := createAuditFile(user, machine, string(r.dbType), r.dbHost, r.sessionDatabase, r.sessionRole)
+	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, r.sessionRole)
 	if err != nil {
 		r.base.metrics.errors.Add("audit-file-create-failed", 1)
 		return fmt.Errorf("failed to create audit file: %v", err)

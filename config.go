@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-// Config holds all configuration for the ts-db-relay
+// Config holds all configuration for the ts-db-connector
 type Config struct {
 	Tailscale TailscaleConfig `json:"tailscale"`
 	Relay     RelayConfig     `json:"relay"`
@@ -28,11 +28,11 @@ type RelayConfig struct {
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
-	Type          DBType `json:"type"`
-	Address       string `json:"address"`
-	CAFile        string `json:"ca_file"`
-	AdminUser     string `json:"admin_user"`
-	AdminPassword string `json:"admin_password"`
+	Type          DBEngine `json:"type"`
+	Address       string   `json:"address"`
+	CAFile        string   `json:"ca_file"`
+	AdminUser     string   `json:"admin_user"`
+	AdminPassword string   `json:"admin_password"`
 }
 
 // LoadConfig loads configuration from a JSON file

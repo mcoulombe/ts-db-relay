@@ -1,4 +1,4 @@
-module github.com/tailscale/ts-db-relay
+module github.com/tailscale/ts-db-connector
 
 go 1.25.3
 

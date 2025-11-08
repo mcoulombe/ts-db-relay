@@ -1,16 +1,20 @@
 services:
-  ts-db-relay:
+  ts-db-connector:
     build:
       dockerfile: Dockerfile
-    container_name: ts-db-relay
+    container_name: ts-db-connector
     environment:
       - POSTGRES_USER=test
       - POSTGRES_PASSWORD=Test4Sk8board
       - POSTGRES_DB=testdb
+      - COCKROACH_USER=test
+      - COCKROACH_PASSWORD=Test4Sk8board
+      - COCKROACH_DB=testdb
       - TS_AUTHKEY=$TS_AUTHKEY
       - TS_SERVER=$TS_SERVER
       - TSNET_FORCE_LOGIN=1
     volumes:
+      - ../cmd/ts-db-connector.exe:/usr/local/bin/ts-db-connector
       - ../data/postgres:/var/lib/postgresql/data
       - ../data/postgres-ts-state:/var/lib/postgres-ts-state
       - ../data/postgres-certs:/var/lib/postgres-certs
@@ -19,7 +23,6 @@ services:
       - ../data/cockroachdb-ts-state:/var/lib/cockroachdb-ts-state
       - ../data/cockroachdb-certs:/var/lib/cockroachdb-certs
       - ../data/cockroachdb-audits:/var/lib/cockroachdb-audits
-      - ../cmd/ts-db-relay.exe:/usr/local/bin/ts-db-relay
     cap_add:
       - NET_ADMIN
     devices:
