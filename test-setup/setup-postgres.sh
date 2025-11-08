@@ -182,16 +182,17 @@ cat > /etc/ts-db-connector/postgres-config.json <<EOF
     "state_dir": "/var/lib/postgres-ts-state"
   },
   "relay": {
-      "port": 5432,
       "debug_port": 80
   },
-  "database": {
-    "name": "my-postgres-1",
-    "type": "postgres",
-    "address": "localhost:5432",
-    "ca_file": "/var/lib/postgres-certs/ca.crt",
-    "admin_user": "$POSTGRES_ADMIN_USER",
-    "admin_password": "$POSTGRES_ADMIN_PASSWORD"
+  "databases": {
+    "my-postgres-1": {
+      "engine": "postgres",
+      "host": "localhost",
+      "port": 5432,
+      "ca_file": "/var/lib/postgres-certs/ca.crt",
+      "admin_user": "$POSTGRES_ADMIN_USER",
+      "admin_password": "$POSTGRES_ADMIN_PASSWORD"
+    }
   }
 }
 EOF

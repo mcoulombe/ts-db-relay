@@ -52,33 +52,38 @@ func main() {
 		log.Fatalf("unable to instantiate Tailscale Local tsClient: %v", err)
 	}
 
-	relay, err := NewRelay(&config.Database, tsClient)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	expvar.Publish(config.Tailscale.Hostname, relay.Metrics())
-
-	if config.Relay.DebugPort != 0 {
+	if config.Connector.DebugPort != 0 {
 		mux := http.NewServeMux()
 		tsweb.Debugger(mux)
 		srv := &http.Server{
 			Handler: mux,
 		}
-		debugListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", config.Relay.DebugPort))
+		debugListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", config.Connector.DebugPort))
 		if err != nil {
 			log.Fatal(err)
 		}
 		go func() {
-			log.Printf("serving debug access to %s on port %d", config.Database.Address, config.Relay.DebugPort)
+			log.Printf("serving debug access on port %d", config.Connector.DebugPort)
 			log.Fatal(srv.Serve(debugListener))
 		}()
 	}
 
-	relayListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", config.Relay.Port))
-	if err != nil {
-		log.Fatal(err)
+	for dbName, dbConfig := range config.Databases {
+		relay, err := NewRelay(&dbConfig, tsClient)
+		if err != nil {
+			log.Fatalf("failed to create relay for database %q: %v", dbName, err)
+		}
+
+		expvar.Publish(fmt.Sprintf("%s-%s", config.Tailscale.Hostname, dbName), relay.Metrics())
+
+		relayListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", dbConfig.Port))
+		if err != nil {
+			log.Fatalf("failed to listen on port %d for database %q: %v", dbConfig.Port, dbName, err)
+		}
+
+		log.Printf("serving access to %s (%s) on port %d", dbName, dbConfig.Host, dbConfig.Port)
+		log.Fatal(relay.Serve(relayListener))
 	}
-	log.Printf("serving access to %s on port %d", config.Database.Address, config.Relay.Port)
-	log.Fatal(relay.Serve(relayListener))
+
+	select {}
 }

@@ -139,16 +139,17 @@ cat > /etc/ts-db-connector/cockroachdb-config.json <<EOF
     "state_dir": "/var/lib/cockroachdb-ts-state"
   },
   "relay": {
-      "port": 26257,
       "debug_port": 81
   },
-  "database": {
-    "name": "my-cockroach-1",
-    "type": "cockroachdb",
-    "address": "localhost:26257",
-    "ca_file": "/var/lib/cockroachdb-certs/ca.crt",
-    "admin_user": "$COCKROACHDB_ADMIN_USER",
-    "admin_password": "$COCKROACHDB_ADMIN_PASSWORD"
+  "databases": {
+    "my-cockroach-1": {
+      "engine": "cockroachdb",
+      "host": "localhost",
+      "port": 26257,
+      "ca_file": "/var/lib/cockroachdb-certs/ca.crt",
+      "admin_user": "$COCKROACHDB_ADMIN_USER",
+      "admin_password": "$COCKROACHDB_ADMIN_PASSWORD"
+    }
   }
 }
 EOF

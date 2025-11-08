@@ -88,7 +88,7 @@ func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, st
 
 // hasAccess checks if the given Tailscale identity is authorized to access the specified database
 // according to the grants defined in the tailnet policy file.
-func (b *base) hasAccess(user, machine, dbEngine, dbPort, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
+func (b *base) hasAccess(user, machine, dbEngine, sessionDB, sessionRole string, dbPort int, capabilities []tailcfg.RawMessage) (bool, error) {
 	if capabilities == nil {
 		b.metrics.errors.Add("no-ts-db-database-capability", 1)
 		return false, fmt.Errorf("user %q on machine %q does not have ts-db-database capability", user, machine)
@@ -101,20 +101,16 @@ func (b *base) hasAccess(user, machine, dbEngine, dbPort, sessionDB, sessionRole
 			return false, fmt.Errorf("failed to parse capability value: %v", err)
 		}
 
-		// Iterate through all database identifiers (e.g., "my-postgres-1")
 		for _, dbCap := range grantCap {
-			// Check if the engine matches the requested database engine
 			if dbCap.Engine != dbEngine {
 				continue
 			}
 
-			// Determine the port to check against (use default if not specified)
 			capPort := dbCap.Port
-			if capPort == "" {
+			if capPort == 0 {
 				capPort = DBEngine(dbCap.Engine).DefaultPort()
 			}
 
-			// Check if the port matches the requested port
 			if capPort != dbPort {
 				continue
 			}

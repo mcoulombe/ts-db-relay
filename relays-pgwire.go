@@ -31,9 +31,8 @@ type pgWireRelay struct {
 	base
 
 	dbEngine       DBEngine
-	dbAddr         string
 	dbHost         string
-	dbPort         string
+	dbPort         int
 	dbAdminUser    string
 	dbAdminPass    string
 	dbCertPool     *x509.CertPool
@@ -46,11 +45,6 @@ type pgWireRelay struct {
 }
 
 func newPGWireRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay, error) {
-	dbHost, dbPort, err := net.SplitHostPort(dbCfg.Address)
-	if err != nil {
-		return nil, err
-	}
-
 	dbCA, err := os.ReadFile(dbCfg.CAFile)
 	if err != nil {
 		return nil, err
@@ -59,16 +53,15 @@ func newPGWireRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay
 	if !dbCertPool.AppendCertsFromPEM(dbCA) {
 		return nil, fmt.Errorf("invalid CA cert in %q", dbCfg.CAFile)
 	}
-	downstreamCert, err := mkSelfSigned(dbHost)
+	downstreamCert, err := mkSelfSigned(dbCfg.Host)
 	if err != nil {
 		return nil, err
 	}
 
 	r := &pgWireRelay{
-		dbEngine:       dbCfg.Type,
-		dbAddr:         dbCfg.Address,
-		dbHost:         dbHost,
-		dbPort:         dbPort,
+		dbEngine:       dbCfg.Engine,
+		dbHost:         dbCfg.Host,
+		dbPort:         dbCfg.Port,
 		dbAdminUser:    dbCfg.AdminUser,
 		dbAdminPass:    dbCfg.AdminPassword,
 		dbCertPool:     dbCertPool,
@@ -102,7 +95,7 @@ func (r *pgWireRelay) initSecretsEngine() error {
 		return fmt.Errorf("plugin does not implement Database interface")
 	}
 
-	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%s/postgres?sslmode=require",
+	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%d/postgres?sslmode=require",
 		r.dbAdminUser, r.dbAdminPass, r.dbHost, r.dbPort)
 
 	_, err = plugin.Initialize(context.Background(), dbplugin.InitializeRequest{
@@ -160,7 +153,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
-	allowed, err := r.hasAccess(user, machine, string(r.dbEngine), r.dbPort, r.sessionDatabase, r.targetRole, capabilities)
+	allowed, err := r.hasAccess(user, machine, string(r.dbEngine), r.sessionDatabase, r.targetRole, r.dbPort, capabilities)
 	if err != nil {
 		r.base.metrics.errors.Add("authentication", 1)
 		return err
@@ -305,7 +298,7 @@ func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[st
 	// Dial the database
 	var d net.Dialer
 	d.Timeout = 10 * time.Second
-	dbConn, err := d.DialContext(ctx, "tcp", r.dbAddr)
+	dbConn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", r.dbHost, r.dbPort))
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial: %w", err)
 	}
