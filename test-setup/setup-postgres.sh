@@ -82,21 +82,32 @@ echo "Postgres TLS certificates generated with SANs."
 echo "Initializing Postgres database..."
 su postgres -c "initdb -D $PGDATA"
 
-# Write a secure pg_hba.conf that forces password auth and SSL
+# Write a pg_hba.conf that allows SSL connections from anywhere
+# For test/development purposes - adjust for production use
 cat > "$PGDATA/pg_hba.conf" <<'EOF'
+# Allow local connections without password for postgres user
 local   all             postgres                                trust
+# Require password for other local connections
 local   all             all                                     md5
-hostssl all             all             127.0.0.1/32            md5
-hostssl all             all             ::1/128                 md5
+# Allow SSL connections from anywhere with password
 hostssl all             all             0.0.0.0/0               md5
+hostssl all             all             ::/0                    md5
+# Allow non-SSL connections from Docker network and localhost (for testing)
+host    all             all             127.0.0.1/32            md5
+host    all             all             ::1/128                 md5
+host    all             all             172.16.0.0/12           md5
+host    all             all             192.168.0.0/16          md5
 EOF
 
 # Ensure correct permissions
 chown postgres:postgres "$PGDATA/pg_hba.conf"
 
-# Configure Postgres for SSL
-echo "Configuring Postgres SSL settings..."
+# Configure Postgres for SSL and network access
+echo "Configuring Postgres SSL settings and network access..."
 cat >> "$PGDATA/postgresql.conf" <<'EOF'
+
+# Network Configuration - listen on all interfaces
+listen_addresses = '*'
 
 # SSL Configuration
 ssl = on
@@ -168,41 +179,45 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$POSTGRES_DB')\gexec
 EOSQL
 echo "Database '$POSTGRES_DB' is ready."
 
-# Create config directory
-mkdir -p /etc/ts-db-connector
-chmod 755 /etc/ts-db-connector
+# Update shared config file with Postgres database entry
+CONFIG_FILE="/workspace/.config.hujson"
+echo "Updating shared config file with Postgres database entry..."
 
-# Generate shared config file
-echo "Generating Postgres connector config file..."
-cat > /etc/ts-db-connector/postgres-config.json <<EOF
-{
-  "tailscale": {
-    "control_url": "$TS_SERVER",
-    "hostname": "postgres-db",
-    "state_dir": "/var/lib/postgres-ts-state"
-  },
-  "relay": {
-      "debug_port": 80
-  },
-  "databases": {
-    "my-postgres-1": {
-      "engine": "postgres",
-      "host": "localhost",
-      "port": 5432,
-      "ca_file": "/var/lib/postgres-certs/ca.crt",
-      "admin_user": "$POSTGRES_ADMIN_USER",
-      "admin_password": "$POSTGRES_ADMIN_PASSWORD"
-    }
-  }
-}
-EOF
+# Ensure config file exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Config file not found at $CONFIG_FILE"
+    ls -la /workspace/ || true
+    exit 1
+fi
 
-chmod 600 /etc/ts-db-connector/postgres-config.json
-echo "Postgres connector config file created."
+echo "Config file found at $CONFIG_FILE"
+echo "Current content:"
+cat "$CONFIG_FILE"
 
-# Start Postgres connector
-echo "Starting Postgres connector..."
-TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-connector --config=/etc/ts-db-connector/postgres-config.json &
-POSTGRES_CONNECTOR_PID=$!
+# Update the config file using jq
+echo "Adding Postgres database entry..."
+jq \
+    --arg host "localhost" \
+    --arg port "5432" \
+    --arg ca_file "./data/postgres-certs/ca.crt" \
+    --arg admin_user "$POSTGRES_ADMIN_USER" \
+    --arg admin_pass "$POSTGRES_ADMIN_PASSWORD" \
+    '.databases["my-postgres-1"] = {
+        "engine": "postgres",
+        "host": $host,
+        "port": ($port | tonumber),
+        "ca_file": $ca_file,
+        "admin_user": $admin_user,
+        "admin_password": $admin_pass
+    }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
 
-echo "Postgres setup complete. Connector PID: $POSTGRES_CONNECTOR_PID"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to update config file with jq"
+    exit 1
+fi
+
+mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+echo "Postgres database entry added to config file."
+echo "Updated config:"
+cat "$CONFIG_FILE"
+echo "Postgres setup complete."

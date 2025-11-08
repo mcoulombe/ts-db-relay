@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/tailscale/hujson"
 )
 
 // Config holds all configuration for the ts-db-connector
@@ -48,25 +50,34 @@ type DatabaseConfig struct {
 	AdminPassword string `json:"admin_password"`
 }
 
-// LoadConfig loads configuration from a JSON file
+// LoadConfig loads configuration from a JSON or HuJSON file
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
 
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
+	ast, err := hujson.Parse(data)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %v", err)
 	}
+	ast.Standardize()
+	data = ast.Pack()
 
-	for _, db := range config.Databases {
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config file: %v", err)
+	}
+
+	// Apply defaults for each database
+	for name, db := range config.Databases {
 		if db.Host == "" {
 			db.Host = "localhost"
 		}
 		if db.Port == 0 {
 			db.Port = db.Engine.DefaultPort()
 		}
+		config.Databases[name] = db
 	}
 
 	return &config, nil

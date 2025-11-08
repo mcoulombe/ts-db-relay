@@ -2,7 +2,7 @@ FROM debian:bullseye-slim
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
-    postgresql postgresql-contrib bash curl gnupg lsb-release iproute2 iptables ca-certificates openssl wget \
+    postgresql postgresql-contrib bash curl gnupg lsb-release iproute2 iptables ca-certificates openssl wget jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CockroachDB (detect architecture)

@@ -16,7 +16,13 @@ func createAuditFile(user, machine, dbType, dbHost, database, dbUser string) (*o
 	timestamp := time.Now().Format("20060102-150405")
 	auditFilename := fmt.Sprintf("%s-%s.log", timestamp, dbUser)
 
-	auditDir := fmt.Sprintf("/var/lib/%s-audits", dbType)
+	auditDir := fmt.Sprintf("./data/%s-audits", dbType)
+
+	// Ensure audit directory exists
+	if err := os.MkdirAll(auditDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create audit directory: %v", err)
+	}
+
 	auditPath := filepath.Join(auditDir, auditFilename)
 
 	auditFile, err := os.Create(auditPath)

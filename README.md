@@ -7,7 +7,7 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
 1. Build the binary.
 
    ```bash
-   GOOS=linux GOARCH=amd64 go build -o ./cmd/ts-db-connector.exe ./...
+   go build -gcflags="all=-N -l" -o ./cmd/ts-db-connector ./...
    ```
 
 2. (Optional) Start your custom Tailscale control server if not using https://login.tailscale.com/
@@ -84,20 +84,29 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
    export TS_AUTHKEY=tskey-auth-x-x # reusable ephemeral key is recommended for quick iterations
    ```
 
-8. (Optional) If using a custom local control server, update the `TS_SERVER` environment variable for container access.
+9. Run docker compose to start pre-configured test databases. This will set up the databases and update the `.config.hujson` file with the database entries.
 
    ```bash
-   export TS_SERVER=http://host.docker.internal:31544
-   ```
-
-9. Run docker compose to start a container with your local ts-db-connector binary and pre-configured test databases.
-
-   ```bash
+   # Start all database engines (default)
    docker compose -f test-setup/compose.yml up --build
+
+   # Start only specific database engines
+   DB_ENGINES=postgres docker compose -f test-setup/compose.yml up --build
+   DB_ENGINES="postgres cockroachdb" docker compose -f test-setup/compose.yml up --build
    ```
 
-10. Connect to the database over Tailscale, works from anywhere without credentials.
+   The setup scripts will populate `.config.hujson` with database connection details.
+
+10. Run the ts-db-connector on your host machine.
 
     ```bash
-    psql -h postgres-db -p 5432 -U test -d testdb
+    TS_AUTHKEY=$TS_AUTHKEY ./cmd/ts-db-connector --config=.config.hujson
+    ```
+
+    The connector will join your tailnet and start serving database connections over Tailscale.
+
+11. Connect to the database over Tailscale, works from anywhere without credentials.
+
+    ```bash
+    psql -h db-connector -p 5432 -U test -d testdb
     ```

@@ -53,8 +53,8 @@ echo "Starting CockroachDB..."
 cockroach start-single-node \
     --certs-dir=/var/lib/cockroachdb-certs \
     --store=$COCKROACH_DATA \
-    --listen-addr=localhost:26257 \
-    --http-addr=localhost:8080 \
+    --listen-addr=0.0.0.0:26257 \
+    --http-addr=0.0.0.0:8080 \
     --background
 
 # Give CockroachDB a moment to initialize
@@ -125,41 +125,45 @@ SET client_encoding = 'UTF8';
 EOSQL
 echo "Database '$COCKROACH_DB' is ready."
 
-# Create config directory
-mkdir -p /etc/ts-db-connector
-chmod 755 /etc/ts-db-connector
+# Update shared config file with CockroachDB database entry
+CONFIG_FILE="/workspace/.config.hujson"
+echo "Updating shared config file with CockroachDB database entry..."
 
-# Generate CockroachDB connector config file
-echo "Generating CockroachDB connector config file..."
-cat > /etc/ts-db-connector/cockroachdb-config.json <<EOF
-{
-  "tailscale": {
-    "control_url": "$TS_SERVER",
-    "hostname": "cockroachdb-db",
-    "state_dir": "/var/lib/cockroachdb-ts-state"
-  },
-  "relay": {
-      "debug_port": 81
-  },
-  "databases": {
-    "my-cockroach-1": {
-      "engine": "cockroachdb",
-      "host": "localhost",
-      "port": 26257,
-      "ca_file": "/var/lib/cockroachdb-certs/ca.crt",
-      "admin_user": "$COCKROACHDB_ADMIN_USER",
-      "admin_password": "$COCKROACHDB_ADMIN_PASSWORD"
-    }
-  }
-}
-EOF
+# Ensure config file exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Config file not found at $CONFIG_FILE"
+    ls -la /workspace/ || true
+    exit 1
+fi
 
-chmod 600 /etc/ts-db-connector/cockroachdb-config.json
-echo "CockroachDB connector config file created."
+echo "Config file found at $CONFIG_FILE"
+echo "Current content:"
+cat "$CONFIG_FILE"
 
-# Start CockroachDB connector
-echo "Starting CockroachDB connector..."
-TS_AUTHKEY=$TS_AUTHKEY /usr/local/bin/ts-db-connector --config=/etc/ts-db-connector/cockroachdb-config.json &
-COCKROACHDB_CONNECTOR_PID=$!
+# Update the config file using jq
+echo "Adding CockroachDB database entry..."
+jq \
+    --arg host "localhost" \
+    --arg port "26257" \
+    --arg ca_file "./data/cockroachdb-certs/ca.crt" \
+    --arg admin_user "$COCKROACHDB_ADMIN_USER" \
+    --arg admin_pass "$COCKROACHDB_ADMIN_PASSWORD" \
+    '.databases["my-cockroach-1"] = {
+        "engine": "cockroachdb",
+        "host": $host,
+        "port": ($port | tonumber),
+        "ca_file": $ca_file,
+        "admin_user": $admin_user,
+        "admin_password": $admin_pass
+    }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
 
-echo "CockroachDB setup complete. Connector PID: $COCKROACHDB_CONNECTOR_PID"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to update config file with jq"
+    exit 1
+fi
+
+mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+echo "CockroachDB database entry added to config file."
+echo "Updated config:"
+cat "$CONFIG_FILE"
+echo "CockroachDB setup complete."

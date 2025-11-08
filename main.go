@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 
@@ -82,8 +83,13 @@ func main() {
 		}
 
 		log.Printf("serving access to %s (%s) on port %d", dbName, dbConfig.Host, dbConfig.Port)
-		log.Fatal(relay.Serve(relayListener))
+
+		// Start each relay in a goroutine so we can serve multiple databases
+		go func(r Relay, l net.Listener, name string) {
+			log.Fatalf("relay for database %q ended: %v", name, r.Serve(l))
+		}(relay, relayListener, dbName)
 	}
 
+	// Block forever
 	select {}
 }

@@ -2,6 +2,8 @@ data
 cmd
 test-setup/tailscale-state
 ts-db-connector
+.config.hujson
+.config.hujson.tmp
 
 .DS_Store
 assets/.DS_Store

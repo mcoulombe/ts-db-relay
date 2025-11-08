@@ -10,22 +10,17 @@ services:
       - COCKROACH_USER=test
       - COCKROACH_PASSWORD=Test4Sk8board
       - COCKROACH_DB=testdb
-      - TS_AUTHKEY=$TS_AUTHKEY
-      - TS_SERVER=$TS_SERVER
-      - TSNET_FORCE_LOGIN=1
+      - DB_ENGINES=${DB_ENGINES:-all}
     volumes:
-      - ../cmd/ts-db-connector.exe:/usr/local/bin/ts-db-connector
+      - ..:/workspace
       - ../data/postgres:/var/lib/postgresql/data
-      - ../data/postgres-ts-state:/var/lib/postgres-ts-state
       - ../data/postgres-certs:/var/lib/postgres-certs
       - ../data/postgres-audits:/var/lib/postgres-audits
       - ../data/cockroachdb:/var/lib/cockroachdb/data
-      - ../data/cockroachdb-ts-state:/var/lib/cockroachdb-ts-state
       - ../data/cockroachdb-certs:/var/lib/cockroachdb-certs
       - ../data/cockroachdb-audits:/var/lib/cockroachdb-audits
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun
+    ports:
+      - "5432:5432"
+      - "26257:26257"
     stdin_open: true
     tty: true
