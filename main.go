@@ -42,40 +42,53 @@ func main() {
 		controlURL = "https://login.tailscale.com/"
 	}
 
-	tsServer := &tsnet.Server{
+	localStorageDir := config.Tailscale.LocalStorageDir
+	if localStorageDir == "" {
+		localStorageDir = "./data/ts-state"
+	}
+
+	// Create one admin server
+	var debugServer *tsnet.Server
+	debugServer = &tsnet.Server{
 		ControlURL: controlURL,
-		Hostname:   config.Tailscale.Hostname,
-		Dir:        config.Tailscale.StateDir,
+		Hostname:   "db-connector-admin",
+		Dir:        fmt.Sprintf("%s/debug", localStorageDir),
 	}
 
-	tsClient, err := tsServer.LocalClient()
+	mux := http.NewServeMux()
+	tsweb.Debugger(mux)
+	srv := &http.Server{
+		Handler: mux,
+	}
+	debugListener, err := debugServer.Listen("tcp", fmt.Sprintf(":%d", config.Connector.AdminPort))
 	if err != nil {
-		log.Fatalf("unable to instantiate Tailscale Local tsClient: %v", err)
+		log.Fatal(err)
 	}
+	go func() {
+		log.Printf("serving admin API on port %d", config.Connector.AdminPort)
+		log.Fatal(srv.Serve(debugListener))
+	}()
 
-	if config.Connector.DebugPort != 0 {
-		mux := http.NewServeMux()
-		tsweb.Debugger(mux)
-		srv := &http.Server{
-			Handler: mux,
-		}
-		debugListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", config.Connector.DebugPort))
-		if err != nil {
-			log.Fatal(err)
-		}
-		go func() {
-			log.Printf("serving debug access on port %d", config.Connector.DebugPort)
-			log.Fatal(srv.Serve(debugListener))
-		}()
-	}
-
+	// Create one tsnet.Server per database
 	for dbName, dbConfig := range config.Databases {
+		// Create dedicated tsnet.Server for this database
+		tsServer := &tsnet.Server{
+			ControlURL: controlURL,
+			Hostname:   dbConfig.Hostname,
+			Dir:        fmt.Sprintf("%s/%s", localStorageDir, dbName),
+		}
+
+		tsClient, err := tsServer.LocalClient()
+		if err != nil {
+			log.Fatalf("unable to instantiate Tailscale Local client for %q: %v", dbName, err)
+		}
+
 		relay, err := NewRelay(&dbConfig, tsClient)
 		if err != nil {
 			log.Fatalf("failed to create relay for database %q: %v", dbName, err)
 		}
 
-		expvar.Publish(fmt.Sprintf("%s-%s", config.Tailscale.Hostname, dbName), relay.Metrics())
+		expvar.Publish(dbName, relay.Metrics())
 
 		relayListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", dbConfig.Port))
 		if err != nil {

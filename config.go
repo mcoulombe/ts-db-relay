@@ -22,22 +22,22 @@ type Config struct {
 type TailscaleConfig struct {
 	// ControlURL is the control server to use when joining the tailnet
 	ControlURL string `json:"control_url"`
-	// Hostname is the device name to use on the tailnet
-	Hostname string `json:"hostname"`
-	// StateDir is the directory where to store persistent local data used during reboots
-	StateDir string `json:"state_dir"`
+	// LocalStorageDir is the base directory where to store persistent local data for each database node
+	LocalStorageDir string `json:"local_storage_dir"`
 }
 
 // ConnectorConfig holds connector server configuration
 type ConnectorConfig struct {
-	// DebugPort is the HTTP port that serves the debug endpoints
-	DebugPort int `json:"debug_port,omitempty"`
+	// AdminPort is the HTTP port that serves the debug endpoints
+	AdminPort int `json:"admin_port,omitzero"`
 }
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
 	// Engine is the type of database, e.g. postgres
 	Engine DBEngine `json:"engine"`
+	// Hostname is the Tailscale node hostname for this database, defaults to the database key
+	Hostname string `json:"hostname"`
 	// Host is the host where the database instance is located, defaults to localhost
 	Host string `json:"host"`
 	// Port is the port where the database instance is available, defaults to well-known ports depending on the Engine
@@ -69,8 +69,14 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config file: %v", err)
 	}
 
-	// Apply defaults for each database
+	if config.Connector.AdminPort == 0 {
+		config.Connector.AdminPort = 8080
+	}
+	
 	for name, db := range config.Databases {
+		if db.Hostname == "" {
+			db.Hostname = name
+		}
 		if db.Host == "" {
 			db.Host = "localhost"
 		}
