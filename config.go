@@ -22,7 +22,7 @@ type Config struct {
 type TailscaleConfig struct {
 	// ControlURL is the control server to use when joining the tailnet
 	ControlURL string `json:"control_url"`
-	// LocalStorageDir is the base directory where to store persistent local data for each database node
+	// LocalStorageDir is the directory where to store persistent local data
 	LocalStorageDir string `json:"local_storage_dir"`
 }
 
@@ -36,8 +36,6 @@ type ConnectorConfig struct {
 type DatabaseConfig struct {
 	// Engine is the type of database, e.g. postgres
 	Engine DBEngine `json:"engine"`
-	// Hostname is the Tailscale node hostname for this database, defaults to the database key
-	Hostname string `json:"hostname"`
 	// Host is the host where the database instance is located, defaults to localhost
 	Host string `json:"host"`
 	// Port is the port where the database instance is available, defaults to well-known ports depending on the Engine
@@ -72,11 +70,8 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Connector.AdminPort == 0 {
 		config.Connector.AdminPort = 8080
 	}
-	
+
 	for name, db := range config.Databases {
-		if db.Hostname == "" {
-			db.Hostname = name
-		}
 		if db.Host == "" {
 			db.Host = "localhost"
 		}

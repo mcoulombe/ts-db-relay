@@ -74,7 +74,7 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
    }
    ```
 
-6. Create an authkey so the ts-db-connector nodes can join your tailnet. Each database will appear as a separate node using its database key as the hostname (e.g., "my-postgres-1", "my-cockroach-1"). ($TS_SERVER/admin/settings/keys)
+6. Create an authkey so the ts-db-connector can join your tailnet. All databases will be accessible via a single node with hostname "ts-db-connector". ($TS_SERVER/admin/settings/keys)
 
    ![Alt text](assets/authkey-screenshot-readme.png)
 
@@ -105,12 +105,12 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
 
     The connector will join your tailnet and start serving database connections over Tailscale.
 
-11. Connect to the databases over Tailscale, works from anywhere without credentials. Each database is accessible using its database key as the hostname.
+11. Connect to the databases over Tailscale, works from anywhere without credentials. All databases are accessible via the ts-db-connector hostname on their respective ports.
 
     ```bash
     # Connect to Postgres
-    psql -h my-postgres-1 -p 5432 -U test -d testdb
+    psql -h ts-db-connector -p 5432 -U test -d testdb
 
     # Connect to CockroachDB
-    psql -h my-cockroach-1 -p 26257 -U test -d testdb
+    psql -h ts-db-connector -p 26257 -U test -d testdb
     ```
