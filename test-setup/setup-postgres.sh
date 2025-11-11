@@ -180,16 +180,8 @@ EOSQL
 echo "Database '$POSTGRES_DB' is ready."
 
 # Update shared config file with Postgres database entry
-CONFIG_FILE="/workspace/.config.hujson"
+CONFIG_FILE="/workspace/data/.config.hujson"
 echo "Updating shared config file with Postgres database entry..."
-
-# Ensure config file exists
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Error: Config file not found at $CONFIG_FILE"
-    ls -la /workspace/ || true
-    exit 1
-fi
-
 echo "Config file found at $CONFIG_FILE"
 echo "Current content:"
 cat "$CONFIG_FILE"

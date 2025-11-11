@@ -84,7 +84,7 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
    export TS_AUTHKEY=tskey-auth-x-x # reusable ephemeral key is recommended for quick iterations
    ```
 
-9. Run docker compose to start pre-configured test databases. This will set up the databases and update the `.config.hujson` file with the database entries.
+9. Run docker compose to start pre-configured test databases. This will set up the databases and update the `data/.config.hujson` file with the database entries.
 
    ```bash
    # Start all database engines (default)
@@ -95,12 +95,12 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
    DB_ENGINES="postgres cockroachdb" docker compose -f test-setup/compose.yml up --build
    ```
 
-   The setup scripts will populate `.config.hujson` with database connection details.
+   The setup scripts will populate `data/.config.hujson` with database connection details.
 
 10. Run the ts-db-connector on your host machine.
 
     ```bash
-    TS_AUTHKEY=$TS_AUTHKEY ./cmd/ts-db-connector --config=.config.hujson
+    TS_AUTHKEY=$TS_AUTHKEY ./cmd/ts-db-connector --config=data/.config.hujson
     ```
 
     The connector will join your tailnet and start serving database connections over Tailscale.

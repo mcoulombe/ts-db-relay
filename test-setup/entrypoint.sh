@@ -3,6 +3,28 @@ set -e
 
 echo "=== Starting ts-db-connector setup ==="
 
+# Create default config file if it doesn't exist
+mkdir -p /workspace/data
+CONFIG_FILE="/workspace/data/.config.hujson"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Creating default config file at $CONFIG_FILE..."
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "tailscale": {
+    "control_url": "${TS_CONTROL_URL:-http://localhost:31544}",
+    "local_storage_dir": "${TS_LOCAL_STORAGE_DIR:-./data/ts-state}"
+  },
+  "connector": {
+    "admin_port": ${TS_ADMIN_PORT:-8080}
+  },
+  "databases": {}
+}
+EOF
+    echo "Default config file created."
+else
+    echo "Config file already exists at $CONFIG_FILE"
+fi
+
 # Parse DB_ENGINES environment variable (defaults to "all")
 DB_ENGINES=${DB_ENGINES:-all}
 
@@ -38,8 +60,8 @@ else
 fi
 
 echo "=== Setup complete ==="
-echo "Database instances are running and config file updated at /workspace/.config.hujson"
-echo "You can now run ts-db-connector on your host machine with: ./cmd/ts-db-connector --config=.config.hujson"
+echo "Database instances are running and config file updated at /workspace/data/.config.hujson"
+echo "You can now run ts-db-connector on your host machine with: ./cmd/ts-db-connector --config=data/.config.hujson"
 echo "Keeping container alive..."
 
 # Keep container alive

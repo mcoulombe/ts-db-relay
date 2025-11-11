@@ -4,6 +4,9 @@ services:
       dockerfile: Dockerfile
     container_name: ts-db-connector
     environment:
+      - TS_CONTROL_URL=http://localhost:31544
+      - TS_LOCAL_STORAGE_DIR=./data/ts-state
+      - TS_ADMIN_PORT=8080
       - POSTGRES_USER=test
       - POSTGRES_PASSWORD=Test4Sk8board
       - POSTGRES_DB=testdb
