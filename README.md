@@ -65,6 +65,15 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
                      "roles": ["test"]
                    }
                  ]
+               },
+               "my-mongodb-1": {
+                 "engine": "mongodb",
+                 "access": [
+                   {
+                     "databases": ["testdb"],
+                     "roles": ["test"]
+                   }
+                 ]
                }
              }
            ]
@@ -90,10 +99,13 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
    # Start all database engines (default)
    docker compose -f test-setup/compose.yml up --build
 
-   # Start only specific database engines
-   DB_ENGINES=postgres docker compose -f test-setup/compose.yml up --build
-   DB_ENGINES="postgres cockroachdb" docker compose -f test-setup/compose.yml up --build
+   # Start only specific database engines (include 'setup' to create config file)
+   docker compose -f test-setup/compose.yml up --build setup postgres
+   docker compose -f test-setup/compose.yml up --build setup postgres cockroachdb
+   docker compose -f test-setup/compose.yml up --build setup mongodb
    ```
+
+   Available services: `setup`, `postgres`, `cockroachdb`, `mongodb`
 
    The setup scripts will populate `data/.config.hujson` with database connection details.
 
@@ -113,4 +125,7 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
 
     # Connect to CockroachDB
     psql -h ts-db-connector -p 26257 -U test -d testdb
+
+    # Connect to MongoDB
+    mongosh "mongodb://test@ts-db-connector:27017/testdb"
     ```
