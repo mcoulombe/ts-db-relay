@@ -10,14 +10,22 @@ replace (
 	github.com/openbao/openbao/api/auth/userpass/v2 v2.0.0 => github.com/openbao/openbao/api/auth/userpass/v2 v2.4.0
 )
 
+// OpenBao v2.4.0 release - using pseudo-version because the main module's go.mod
+// declares "module github.com/openbao/openbao" without the /v2 suffix required
+// by Go modules for v2+ versions. The SDK and API submodules use proper /v2 paths
+// and can use semantic versions (see github.com/openbao/openbao/sdk/v2 below).
+// Commit f9407a27fbee corresponds to the v2.4.0 git tag (2024-09-11).
 require (
-	// OpenBao v2.4.0 release - using pseudo-version because the main module's go.mod
-	// declares "module github.com/openbao/openbao" without the /v2 suffix required
-	// by Go modules for v2+ versions. The SDK and API submodules use proper /v2 paths
-	// and can use semantic versions (see github.com/openbao/openbao/sdk/v2 below).
-	// Commit f9407a27fbee corresponds to the v2.4.0 git tag (2024-09-11).
 	github.com/openbao/openbao v0.0.0-20250828202315-f9407a27fbee
 	github.com/openbao/openbao/sdk/v2 v2.4.0
+)
+
+require (
+	github.com/jackc/pgproto3/v2 v2.3.3
+	github.com/pkg/errors v0.9.1
+	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a
+	github.com/xdg-go/scram v1.1.2
+	go.mongodb.org/mongo-driver v1.17.6
 	tailscale.com v1.90.0
 )
 
@@ -71,7 +79,6 @@ require (
 	github.com/jackc/chunkreader/v2 v2.0.0 // indirect
 	github.com/jackc/pgio v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
-	github.com/jackc/pgproto3/v2 v2.3.3 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.7.6 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
@@ -88,6 +95,7 @@ require (
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
+	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/oklog/run v1.2.0 // indirect
 	github.com/openbao/go-kms-wrapping/v2 v2.5.0 // indirect
 	github.com/openbao/openbao/api/v2 v2.4.0 // indirect
@@ -104,14 +112,13 @@ require (
 	github.com/tailscale/certstore v0.1.1-0.20231202035212-d3fa0460f47e // indirect
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
 	github.com/tailscale/goupnp v1.0.1-0.20210804011211-c64d0f06ea05 // indirect
-	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a // indirect
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 // indirect
 	github.com/tailscale/wireguard-go v0.0.0-20250716170648-1d0488a3d7da // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
-	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.63.0 // indirect
 	go.opentelemetry.io/otel v1.38.0 // indirect
