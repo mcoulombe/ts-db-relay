@@ -28,6 +28,7 @@ fi
 echo "Starting CockroachDB..."
 cockroach start-single-node \
     --certs-dir=/var/lib/cockroachdb-certs \
+    --accept-sql-without-tls \
     --listen-addr=0.0.0.0:26257 \
     --http-addr=0.0.0.0:8080 &
 COCKROACH_PID=$!

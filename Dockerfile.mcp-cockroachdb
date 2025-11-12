@@ -1,0 +1,14 @@
+FROM mcp/cockroachdb
+
+RUN apt-get update && \
+    apt-get install -y curl iptables iproute2 ca-certificates && \
+    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null && \
+    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale.list && \
+    apt-get update && \
+    apt-get install -y tailscale && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY mcp-entrypoint.sh /usr/local/bin/mcp-entrypoint.sh
+RUN chmod +x /usr/local/bin/mcp-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/mcp-entrypoint.sh"]

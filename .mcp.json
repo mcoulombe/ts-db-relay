@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "cockroach-mcp-server": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--network", "test-setup_default",
+        "--cap-add", "NET_ADMIN",
+        "--cap-add", "NET_RAW",
+        "--device", "/dev/net/tun:/dev/net/tun",
+        "-v", "/Users/maxc/Documents/projects/ts-db-connector/data/cockroachdb-certs:/certs:ro",
+        "-e", "TS_AUTHKEY=tskey-auth-abcd",
+        "-e", "TS_SERVER=http://host.docker.internal:31544",
+        "-e", "CRDB_HOST=ts-db-connector",
+        "-e", "CRDB_PORT=26257",
+        "-e", "CRDB_DATABASE=testdb",
+        "-e", "CRDB_USERNAME=test",
+        "-e", "CRDB_PWD=",
+        "-e", "CRDB_SSL_MODE=disable",
+        "-e", "CRDB_SSL_CA_PATH=",
+        "-e", "CRDB_SSL_CERTFILE=",
+        "-e", "CRDB_SSL_KEYFILE=",
+        "mcp/cockroachdb-tailscale"
+      ]
+    }
+  }
+}
