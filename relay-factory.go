@@ -12,6 +12,7 @@ type DBEngine string
 const (
 	DBEnginePostgres  DBEngine = "postgres"
 	DBEngineCockroach          = "cockroachdb"
+	DBEngineMongoDB            = "mongodb"
 )
 
 // DefaultPort returns the default port for the database engine
@@ -21,6 +22,8 @@ func (e DBEngine) DefaultPort() int {
 		return 5432
 	case DBEngineCockroach:
 		return 26257
+	case DBEngineMongoDB:
+		return 27017
 	default:
 		return 0
 	}
@@ -33,6 +36,8 @@ func NewRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (Relay, error) {
 		return newPGWireRelay(dbCfg, tsClient)
 	case DBEngineCockroach:
 		return newPGWireRelay(dbCfg, tsClient)
+	case DBEngineMongoDB:
+		return newMongoRelay(dbCfg, tsClient)
 	default:
 		return nil, fmt.Errorf("database engine %q is not supported", dbCfg.Engine)
 	}
