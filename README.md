@@ -2,7 +2,98 @@
 
 A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nodes access databases from anywhere using their Tailscale identity to authenticate.
 
-## Local setup
+## Usage
+
+The ts-db-connector is a [tsnet](https://tailscale.com/kb/1244/tsnet) application that runs as a single Tailscale node and proxies database connections over your tailnet.
+
+### Configuration File
+
+Configuration is stored in HuJSON format (JSON with comments) and loaded via the `--config` flag. Field values can reference environment variables using the `env:` prefix or files using the `file:` prefix.
+
+#### Tailscale Configuration
+
+| Field           | Purpose                                                                  | Default                       | Well-known Env Var |
+|-----------------|--------------------------------------------------------------------------|-------------------------------|--------------------|
+| `control_url`   | Tailscale control server URL (must be http/https without trailing slash) | `https://login.tailscale.com` | `TS_SERVER`        |
+| `state_dir`     | Directory for persistent Tailscale state                                 | `./data/ts-db-connector`      | `TS_STATE_DIR`     |
+| `hostname`      | Hostname for the Tailscale node (1-63 chars, letters/numbers/hyphens)    | `ts-db-connector`             | `TS_HOSTNAME`      |
+| `authkey`       | Tailscale auth key for joining the tailnet                               | *(empty)*                     | `TS_AUTHKEY`       |
+| `client_id`     | OAuth/Workload Identity client ID                                        | *(empty)*                     | `TS_CLIENT_ID`     |
+| `client_secret` | OAuth client secret                                                      | *(empty)*                     | `TS_CLIENT_SECRET` |
+| `id_token`      | Workload Identity ID token                                               | *(empty)*                     | `ID_TOKEN`         |
+
+*Note: At least one authentication method (auth_key, client credentials, or ID token) should be provided unless already connected to the tailnet.*
+
+#### Connector Configuration
+
+| Field        | Purpose                                     | Default |
+|--------------|---------------------------------------------|---------|
+| `admin_port` | HTTP port for admin API and debug endpoints | `8080`  |
+
+#### Database Configuration
+
+Each database is defined in the `databases` object with a unique key. All fields support `env:` and `file:` prefixes for referencing secrets.
+
+| Field            | Purpose                                                    | Default                                           |
+|------------------|------------------------------------------------------------|---------------------------------------------------|
+| `engine`         | Database type                                              | *(required)*                                      |
+| `host`           | Database server hostname or IP                             | `localhost`                                       |
+| `port`           | Database server port (0-65535)                             | Engine-specific e.g. Postgres=5432, MongoDB=27017 |
+| `listening_port` | Port where connector listens for Tailscale connections     | Same as `port`                                    |
+| `ca_file`        | Path to database TLS CA certificate                        | *(required)*                                      |
+| `admin_user`     | Database admin user for managing ephemeral credentials     | *(required)*                                      |
+| `admin_password` | Database admin password for managing ephemeral credentials | *(required)*                                      |
+
+#### Full Configuration Example
+
+```json
+{
+  // Comments are allowed in HuJSON format
+  "tailscale": {
+    "control_url": "https://login.tailscale.com",
+    "hostname": "my-db-connector",
+    "authkey": "env:TS_AUTHKEY"
+  },
+  "connector": {
+    "admin_port": 8080
+  },
+  "databases": {
+    "production-pg": {
+      "engine": "postgres",
+      "host": "pg.internal.example.com",
+      "port": 5432,
+      "ca_file": "./certs/pg-ca.crt",
+      "admin_user": "connector_admin",
+      "admin_password": "file:/secrets/pg-admin-password"
+    },
+    "analytics-crdb": {
+      "engine": "cockroachdb",
+      "host": "crdb.internal.example.com",
+      "port": 26257,
+      "ca_file": "./certs/crdb-ca.crt",
+      "admin_user": "root",
+      "admin_password": "env:CRDB_ADMIN_PASSWORD"
+    }
+  }
+}
+```
+
+#### Minimal Configuration Example
+
+```json
+{
+  "databases": {
+    "production-pg": {
+      "engine": "postgres",
+      "ca_file": "./certs/pg-ca.crt",
+      "admin_user": "connector_admin",
+      "admin_password": "file:/secrets/pg-admin-password"
+    }
+  }
+}
+```
+
+## Development
 
 1. Build the binary.
 
@@ -127,7 +218,7 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
     psql -h ts-db-connector -p 26257 -U test -d testdb
 
     # Connect to MongoDB
-    mongosh "mongodb://test@ts-db-connector:27017/testdb"
+    mongosh "mongodb://test:test@ts-db-connector:27017/testdb"
     ```
     
 ## Acceptance tests

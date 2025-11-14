@@ -88,7 +88,7 @@ jq --arg host "localhost" \
    --arg ca_file "./data/cockroachdb-certs/ca.crt" \
    --arg admin_user "$COCKROACH_ADMIN_USER" \
    --arg admin_pass "$COCKROACH_ADMIN_PASSWORD" \
-   '.databases["my-cockroach-1"] = {
+   '.databases["my-cockroachdb-1"] = {
        "engine": "cockroachdb",
        "host": $host,
        "port": ($port | tonumber),

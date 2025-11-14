@@ -54,11 +54,8 @@ func TestRelayServe(t *testing.T) {
 	// WHEN
 	// ====
 
-	config, err := LoadConfig([]byte(configJSON))
+	config, err := ParseConfig([]byte(configJSON))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	connector := &Connector{
