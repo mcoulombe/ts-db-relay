@@ -17,7 +17,8 @@ else
 {
   "tailscale": {
     "control_url": "${TS_CONTROL_URL:-http://localhost:31544}",
-    "local_storage_dir": "${TS_LOCAL_STORAGE_DIR:-./data/ts-state}"
+    "state_dir": "${TS_LOCAL_STORAGE_DIR:-./data/ts-db-connector}",
+    "hostname": "ts-db-connector"
   },
   "connector": {
     "admin_port": ${TS_ADMIN_PORT:-8080}
