@@ -30,6 +30,7 @@ var _ Relay = (*pgWireRelay)(nil)
 type pgWireRelay struct {
 	base
 
+	dbKey          string
 	dbEngine       DBEngine
 	dbHost         string
 	dbPort         int
@@ -44,7 +45,7 @@ type pgWireRelay struct {
 	targetRole      string
 }
 
-func newPGWireRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay, error) {
+func newPGWireRelay(dbKey string, dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay, error) {
 	dbCA, err := os.ReadFile(dbCfg.CAFile)
 	if err != nil {
 		return nil, err
@@ -59,6 +60,7 @@ func newPGWireRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay
 	}
 
 	r := &pgWireRelay{
+		dbKey:          dbKey,
 		dbEngine:       dbCfg.Engine,
 		dbHost:         dbCfg.Host,
 		dbPort:         dbCfg.Port,
@@ -153,7 +155,7 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 		return err
 	}
 
-	allowed, err := r.hasAccess(user, machine, string(r.dbEngine), r.sessionDatabase, r.targetRole, r.dbPort, capabilities)
+	allowed, err := r.hasAccess(user, machine, r.dbKey, string(r.dbEngine), r.sessionDatabase, r.targetRole, capabilities)
 	if err != nil {
 		r.base.metrics.errors.Add("authentication", 1)
 		return err
