@@ -114,3 +114,17 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
     # Connect to CockroachDB
     psql -h ts-db-connector -p 26257 -U test -d testdb
     ```
+    
+## Acceptance tests
+
+The acceptance tests use [testcontainers-go](https://golang.testcontainers.org) to create containerised databases instances.
+If your container management tool places the Docker socket file in a non-standard location, you need to symlink that location to `/var/run/docker.sock`.
+```
+sudo ln -s $DOCKER_SOCKET_FILE_LOCATION /var/run/docker.sock
+```
+Alternatively, if you don't want this to apply globally, set the DOCKER_HOST environment variable to that custom location.
+
+To run the acceptance tests
+```
+make test_acc
+```

@@ -24,7 +24,7 @@ func main() {
 		log.Fatal("missing --config flag: path to configuration file required")
 	}
 
-	config, err := LoadConfig(*configFile)
+	config, err := LoadConfigFromFile(*configFile)
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
