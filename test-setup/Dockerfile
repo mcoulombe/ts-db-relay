@@ -1,26 +1,20 @@
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
-# Install dependencies
+# Install dependencies (just tools needed for setup scripts)
 RUN apt-get update && apt-get install -y \
-    postgresql postgresql-contrib bash curl gnupg lsb-release iproute2 iptables ca-certificates openssl wget jq \
+    bash curl gnupg ca-certificates openssl jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CockroachDB (detect architecture)
-RUN ARCH=$(dpkg --print-architecture) && \
-    if [ "$ARCH" = "arm64" ]; then \
-        wget -qO- https://binaries.cockroachdb.com/cockroach-v23.1.11.linux-arm64.tgz | tar xvz && \
-        cp -i cockroach-v23.1.11.linux-arm64/cockroach /usr/local/bin/ && \
-        rm -rf cockroach-v23.1.11.linux-arm64; \
-    else \
-        wget -qO- https://binaries.cockroachdb.com/cockroach-v23.1.11.linux-amd64.tgz | tar xvz && \
-        cp -i cockroach-v23.1.11.linux-amd64/cockroach /usr/local/bin/ && \
-        rm -rf cockroach-v23.1.11.linux-amd64; \
-    fi
+# Install Docker CLI (needed to run docker exec commands to database containers)
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian bookworm stable" | \
+    tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+    apt-get update && \
+    apt-get install -y docker-ce-cli && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy setup scripts
-COPY entrypoint.sh /entrypoint.sh
-COPY setup-postgres.sh /setup-postgres.sh
-COPY setup-cockroachdb.sh /setup-cockroachdb.sh
-RUN chmod +x /entrypoint.sh /setup-postgres.sh /setup-cockroachdb.sh
+# Copy setup entrypoint
+COPY entrypoint-base.sh /entrypoint-base.sh
+RUN chmod +x /entrypoint-base.sh
 
-CMD ["/entrypoint.sh"]
+CMD ["/entrypoint-base.sh"]

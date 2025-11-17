@@ -41,9 +41,9 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
          "dst": ["tag:ts-db-connectors"],
          "ip": [
            "tcp:5432",
-           "tcp:80",
            "tcp:26257",
-           "tcp:81"
+           "tcp:27017",
+           "tcp:8080",
          ],
          "app": {
            "tailscale.test/cap/databases": [
@@ -59,6 +59,15 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
                },
                "my-cockroachdb-1": {
                  "engine": "cockroachdb",
+                 "access": [
+                   {
+                     "databases": ["testdb"],
+                     "roles": ["test"]
+                   }
+                 ]
+               },
+               "my-mongodb-1": {
+                 "engine": "mongodb",
                  "access": [
                    {
                      "databases": ["testdb"],
@@ -90,10 +99,13 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
    # Start all database engines (default)
    docker compose -f test-setup/compose.yml up --build
 
-   # Start only specific database engines
-   DB_ENGINES=postgres docker compose -f test-setup/compose.yml up --build
-   DB_ENGINES="postgres cockroachdb" docker compose -f test-setup/compose.yml up --build
+   # Start only specific database engines (include 'setup' to create config file)
+   docker compose -f test-setup/compose.yml up --build setup postgres
+   docker compose -f test-setup/compose.yml up --build setup postgres cockroachdb
+   docker compose -f test-setup/compose.yml up --build setup mongodb
    ```
+
+   Available services: `setup`, `postgres`, `cockroachdb`, `mongodb`
 
    The setup scripts will populate `data/.config.hujson` with database connection details.
 
@@ -113,4 +125,7 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
 
     # Connect to CockroachDB
     psql -h ts-db-connector -p 26257 -U test -d testdb
+
+    # Connect to MongoDB
+    mongosh "mongodb://test@ts-db-connector:27017/testdb"
     ```
