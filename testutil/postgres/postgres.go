@@ -1,4 +1,4 @@
-package testutil
+package postgres
 
 import (
 	"context"
@@ -27,12 +27,10 @@ import (
 	"tailscale.com/tsnet"
 )
 
-func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, adminPassword, role string) (string, int, func(*testing.T, context.Context), error) {
+func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, adminPassword, role string) (string, int, func(*testing.T, context.Context)) {
 	t.Helper()
 
-	// Convert []byte to string
-	pgContainer, err := postgres.RunContainer(ctx,
-		testcontainers.WithImage("postgres:13"),
+	pgContainer, err := postgres.Run(ctx, "postgres:13",
 		testcontainers.WithEnv(map[string]string{
 			"POSTGRES_ROLE":           role,
 			"POSTGRES_ADMIN_USER":     adminUser,
@@ -40,7 +38,7 @@ func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, ad
 		}),
 		postgres.WithUsername("postgres"),
 		postgres.WithDatabase(db),
-		postgres.WithOrderedInitScripts("testutil/pg-create-admin.sh", "testutil/pg-create-role.sh"),
+		postgres.WithOrderedInitScripts("testutil/postgres/pg-create-admin.sh", "testutil/postgres/pg-create-role.sh"),
 		testcontainers.WithMounts(testcontainers.ContainerMount{
 			Source: testcontainers.GenericBindMountSource{
 				HostPath: certDir,
@@ -58,7 +56,7 @@ func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, ad
 				},
 				Files: []testcontainers.ContainerFile{
 					{
-						HostFilePath:      "testutil/pg_hba.conf",
+						HostFilePath:      "testutil/postgres/pg_hba.conf",
 						ContainerFilePath: "/var/lib/postgresql/pg_hba.conf",
 						FileMode:          0600,
 					},
@@ -102,7 +100,7 @@ func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, ad
 			t.Logf("failed to terminate postgres container: %v", err)
 		}
 	}
-	return host, port.Int(), cleanup, err
+	return host, port.Int(), cleanup
 }
 
 // SetupPostgresCerts creates TLS certificates for Postgres in a temp directory.
@@ -170,20 +168,42 @@ func SetupPostgresCerts(t *testing.T, dnsNames ...string) (string, string) {
 	return certDir, caFile
 }
 
-func OpenPostgresDB(t *testing.T, dbConnectorIP netip.Addr, pgPort int, pgRole string, pgDB string, dbClient *tsnet.Server) *sql.DB {
-	// Note: sslmode=require (not verify-ca) is used here because the WireGuard
-	// tunnel already provides authentication.
+// MustOpenPostgresDB opens a database connection and performs a ping test.
+func MustOpenPostgresDB(t *testing.T, clientTsnet *tsnet.Server, connectorIP netip.Addr, pgPort int, pgDB string, pgRole string) *sql.DB {
+	t.Helper()
+
+	// Note: using sslmode=require (not verify-ca) because the WireGuard tunnel already provides authentication
+	// and to avoid the additional test setup.
 	pgConn, err := pq.NewConnector(fmt.Sprintf("host=%s port=%d user=%s dbname=%s sslmode=require",
-		dbConnectorIP.String(), pgPort, pgRole, pgDB))
+		connectorIP.String(), pgPort, pgRole, pgDB))
 	if err != nil {
 		t.Fatalf("failed to create connector: %v", err)
 	}
-	// We need to use a custom dialer that routes through the DB client's tsnet.
+	// Set a custom dialer that routes through the client's tsnet.
 	pgConn.Dialer(&TsnetPqDialer{
-		tsnetServer: dbClient,
+		tsnetServer: clientTsnet,
 	})
 	db := sql.OpenDB(pgConn)
+	t.Logf("Database connection successful: client able to open database connection via the relay")
+
+	if err := pingPostgresDB(t, db); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Successfully pinged database via connector at %s:%d", connectorIP, pgPort)
+
 	return db
+}
+
+func pingPostgresDB(t *testing.T, db *sql.DB) error {
+	t.Helper()
+
+	connCtx, connCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer connCancel()
+	if err := db.PingContext(connCtx); err != nil {
+		return fmt.Errorf("failed to ping database: %v", err)
+	}
+
+	return nil
 }
 
 // TsnetPqDialer is a custom dialer type that implements pq.Dialer for connections via Tailscale.

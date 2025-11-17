@@ -16,23 +16,17 @@ replace (
 // and can use semantic versions (see github.com/openbao/openbao/sdk/v2 below).
 // Commit f9407a27fbee corresponds to the v2.4.0 git tag (2024-09-11).
 require (
+	github.com/docker/go-connections v0.6.0
+	github.com/jackc/pgproto3/v2 v2.3.3
+	github.com/lib/pq v1.10.9
 	github.com/openbao/openbao v0.0.0-20250828202315-f9407a27fbee
 	github.com/openbao/openbao/sdk/v2 v2.4.0
-)
-
-require (
-	github.com/jackc/pgproto3/v2 v2.3.3
 	github.com/pkg/errors v0.9.1
 	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a
-	github.com/xdg-go/scram v1.1.2
-	tailscale.com v1.90.0
-)
-
-require (
-	github.com/docker/go-connections v0.6.0
-	github.com/lib/pq v1.10.9
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
+	github.com/xdg-go/scram v1.1.2
+	tailscale.com v1.90.0
 )
 
 require (

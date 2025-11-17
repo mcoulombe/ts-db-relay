@@ -132,7 +132,10 @@ A [tsnet](https://tailscale.com/kb/1244/tsnet) application letting Tailscale nod
     
 ## Acceptance tests
 
-The acceptance tests use [testcontainers-go](https://golang.testcontainers.org) to create containerised databases instances.
+For now, the acceptance tests run against [testcontrol](https://github.com/tailscale/tailscale/tree/main/tstest/integration/testcontrol), an in-memory fake control server that we also use to test other parts of Tailscale. 
+We're planning to decouple this setup further in the near future so that the same test scenarios can be run against a real tailnet and control server.
+
+The tests use [testcontainers-go](https://golang.testcontainers.org) to create containerised databases instances.
 If your container management tool places the Docker socket file in a non-standard location, you need to symlink that location to `/var/run/docker.sock`.
 ```
 sudo ln -s $DOCKER_SOCKET_FILE_LOCATION /var/run/docker.sock

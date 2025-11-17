@@ -1,4 +1,4 @@
-package testutil
+package tailscale
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"math/big"
 	"net/netip"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"reflect"
 	"sync"
 	"tailscale.com/ipn/store/mem"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 	"tailscale.com/types/key"
 	"testing"
@@ -122,3 +124,41 @@ func (tci *testCertIssuer) getCert(chi *tls.ClientHelloInfo) (*tls.Certificate, 
 }
 
 var testCertRoot = newCertIssuer()
+
+func AssertCanPingNode(t *testing.T, ctx context.Context, clientTsnet *tsnet.Server, peerIP netip.Addr) {
+	t.Helper()
+
+	lc, err := clientTsnet.LocalClient()
+	if err != nil {
+		t.Fatalf("failed to get local client: %v", err)
+	}
+
+	// client can see the peer (tailscale status)
+	status, err := lc.Status(ctx)
+	if err != nil {
+		t.Fatalf("failed to get client status: %v", err)
+	}
+	t.Logf("client status: %d peers", len(status.Peer))
+	for ip, peer := range status.Peer {
+		t.Logf("  Peer: %s -> %s", ip, peer.HostName)
+	}
+
+	// client can ping the peer (tailscale ping)
+	if _, err := lc.Ping(ctx, peerIP, tailcfg.PingTSMP); err != nil {
+		t.Fatalf("failed to ping peer: %v", err)
+	}
+
+	t.Log("Ping check successful: client able to ping connector via tailnet")
+}
+
+func AssertCanDialNode(t *testing.T, ctx context.Context, clientTsnet *tsnet.Server, connectorIP netip.Addr, pgPort int) {
+	t.Helper()
+
+	testConn, err := clientTsnet.Dial(ctx, "tcp", fmt.Sprintf("%s:%d", connectorIP.String(), pgPort))
+	if err != nil {
+		t.Fatalf("Failed to dial via tsnet: %v", err)
+	}
+	testConn.Close()
+
+	t.Logf("Direct dial check successful: client able to directly connect to connector's relay port via tailnet")
+}

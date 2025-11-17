@@ -1,15 +1,15 @@
-package testutil
+package tailscale
 
 import (
-	"fmt"
 	"net/http/httptest"
+	"testing"
+
 	"tailscale.com/net/netns"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
 	"tailscale.com/tstest/integration/testcontrol"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
-	"testing"
 )
 
 func StartControl(t *testing.T) (controlURL string, control *testcontrol.Server) {
@@ -39,17 +39,17 @@ func StartControl(t *testing.T) (controlURL string, control *testcontrol.Server)
 	return controlURL, control
 }
 
-func InjectMapResponse(t *testing.T, control *testcontrol.Server, nodeKey key.NodePublic, peerNodeKey key.NodePublic, filterRules []tailcfg.FilterRule) error {
+func MustInjectFilterRules(t *testing.T, control *testcontrol.Server, nodeKey key.NodePublic, peerNodeKey key.NodePublic, filterRules ...tailcfg.FilterRule) {
 	t.Helper()
 
 	node := control.Node(nodeKey)
 	if node == nil {
-		return fmt.Errorf("no node found for %s", nodeKey)
+		t.Fatalf("no node found for %s", nodeKey)
 	}
 
 	peer := control.Node(peerNodeKey)
 	if peer == nil {
-		return fmt.Errorf("no node found for %s", peerNodeKey)
+		t.Fatalf("no node found for %s", peerNodeKey)
 	}
 
 	mapResponse := &tailcfg.MapResponse{
@@ -60,8 +60,6 @@ func InjectMapResponse(t *testing.T, control *testcontrol.Server, nodeKey key.No
 	}
 
 	if !control.AddRawMapResponse(nodeKey, mapResponse) {
-		return fmt.Errorf("failed to inject raw MapResponse for node with key %s", nodeKey)
+		t.Fatalf("failed to inject raw MapResponse for node with key %s", nodeKey)
 	}
-
-	return nil
 }
