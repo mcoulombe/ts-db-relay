@@ -48,13 +48,18 @@ type DatabaseConfig struct {
 	AdminPassword string `json:"admin_password"`
 }
 
-// LoadConfig loads configuration from a JSON or HuJSON file
-func LoadConfig(path string) (*Config, error) {
+// LoadConfigFromFile loads configuration from a JSON or HuJSON file
+func LoadConfigFromFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
 
+	return LoadConfig(data)
+}
+
+// LoadConfig loads configuration from a byte array
+func LoadConfig(data []byte) (*Config, error) {
 	ast, err := hujson.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %v", err)
