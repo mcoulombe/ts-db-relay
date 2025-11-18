@@ -22,7 +22,7 @@ services:
       - POSTGRES_PASSWORD=Test4Sk8board
       - POSTGRES_DB=testdb
     volumes:
-      - ../data/postgres:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
       - ../data/postgres-certs:/var/lib/postgres-certs
       - ../data:/workspace/data
       - ./entrypoint-postgres.sh:/entrypoint-postgres.sh:ro
@@ -41,7 +41,7 @@ services:
       - COCKROACH_PASSWORD=Test4Sk8board
       - COCKROACH_DB=testdb
     volumes:
-      - ../data/cockroachdb:/cockroach/cockroach-data
+      - cockroachdb-data:/cockroach/cockroach-data
       - ../data/cockroachdb-certs:/var/lib/cockroachdb-certs
       - ../data:/workspace/data
       - ./entrypoint-cockroachdb.sh:/entrypoint-cockroachdb.sh:ro
@@ -60,7 +60,7 @@ services:
       - MONGODB_PASSWORD=Test4Sk8board
       - MONGODB_DB=testdb
     volumes:
-      - ../data/mongodb:/data/db
+      - mongodb-data:/data/db
       - ../data/mongodb-certs:/etc/ssl/mongodb
       - ../data:/workspace/data
       - ./entrypoint-mongodb.sh:/entrypoint-mongodb.sh:ro
@@ -71,3 +71,8 @@ services:
     depends_on:
       setup:
         condition: service_started
+
+volumes:
+  postgres-data:
+  cockroachdb-data:
+  mongodb-data:
