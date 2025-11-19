@@ -17,23 +17,23 @@ type Connector struct {
 
 func (c *Connector) Run(ctx context.Context, s *tsnet.Server) error {
 	var wg sync.WaitGroup
-	listeners := []net.Listener{}
+	var listeners []net.Listener
 
 	lc, err := s.LocalClient()
 	if err != nil {
 		return err
 	}
 
-	for dbName, dbConfig := range c.config.Databases {
-		relay, err := NewRelay(&dbConfig, lc)
+	for dbKey, dbConfig := range c.config.Databases {
+		relay, err := dbConfig.Engine.NewRelay(dbKey, &dbConfig, lc)
 		if err != nil {
-			return fmt.Errorf("failed to create relay for %q: %w", dbName, err)
+			return fmt.Errorf("failed to create relay for %q: %w", dbKey, err)
 		}
-		expvar.Publish(dbName, relay.Metrics())
+		expvar.Publish(dbKey, relay.Metrics())
 
 		relayListener, err := s.Listen("tcp", fmt.Sprintf(":%d", dbConfig.Port))
 		if err != nil {
-			return fmt.Errorf("failed to listen on port %d for %q: %w", dbConfig.Port, dbName, err)
+			return fmt.Errorf("failed to listen on port %d for %q: %w", dbConfig.Port, dbKey, err)
 		}
 		listeners = append(listeners, relayListener)
 
@@ -43,7 +43,7 @@ func (c *Connector) Run(ctx context.Context, s *tsnet.Server) error {
 			if err := r.Serve(l); err != nil {
 				log.Printf("Relay for %q ended: %v", name, err)
 			}
-		}(relay, relayListener, dbName)
+		}(relay, relayListener, dbKey)
 	}
 
 	go func() {

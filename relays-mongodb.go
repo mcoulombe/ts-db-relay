@@ -15,6 +15,7 @@ var _ Relay = (*mongoRelay)(nil)
 type mongoRelay struct {
 	base
 
+	dbKey       string
 	dbHost      string
 	dbPort      int
 	dbAdminUser string
@@ -27,7 +28,7 @@ type mongoRelay struct {
 	targetRole      string
 }
 
-func newMongoRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*mongoRelay, error) {
+func newMongoRelay(dbKey string, dbCfg *DatabaseConfig, tsClient *local.Client) (*mongoRelay, error) {
 	if dbCfg.CAFile == "" {
 		return nil, fmt.Errorf("ca_file is required for MongoDB TLS connections")
 	}
@@ -43,6 +44,7 @@ func newMongoRelay(dbCfg *DatabaseConfig, tsClient *local.Client) (*mongoRelay, 
 	}
 
 	r := &mongoRelay{
+		dbKey:       dbKey,
 		dbHost:      dbCfg.Host,
 		dbPort:      dbCfg.Port,
 		dbAdminUser: dbCfg.AdminUser,

@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-
 	"tailscale.com/tsnet"
 	"tailscale.com/tsweb"
 )
 
 var (
-	configFile = flag.String("config", "", "Path to configuration file (JSON format)")
+	configFile = flag.String("config", "", "Path to configuration file (JSON or HuJSON format)")
 )
 
 func main() {
@@ -22,37 +20,26 @@ func main() {
 
 	flag.Parse()
 
+	// TODO define well-known OS-dependant default locations such as ./.config.json or /etc/ts-db-connector/config.json
 	if *configFile == "" {
 		log.Fatal("missing --config flag: path to configuration file required")
 	}
-
-	config, err := LoadConfigFromFile(*configFile)
+	rawCfg, err := LoadConfig(*configFile)
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
-
-	if err := config.Validate(); err != nil {
+	config, err := ParseConfig(rawCfg)
+	if err != nil {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	if os.Getenv("TS_AUTHKEY") == "" {
-		log.Print("Note: you need to run this with TS_AUTHKEY=... the first time, to join your tailnet of choice.")
-	}
-
-	controlURL := config.Tailscale.ControlURL
-	if controlURL == "" {
-		controlURL = "https://login.tailscale.com/"
-	}
-
-	localStorageDir := config.Tailscale.LocalStorageDir
-	if localStorageDir == "" {
-		localStorageDir = "./data/ts-state"
-	}
-
+	// TODO determine if other Server config fields should be editable via the ts-db-connector config file
+	// TODO support client secret and workload identity on top of auth keys to join the tailnet
 	tsServer := &tsnet.Server{
-		ControlURL: controlURL,
-		Hostname:   "ts-db-connector",
-		Dir:        localStorageDir,
+		ControlURL: config.Tailscale.ControlURL,
+		Hostname:   config.Tailscale.Hostname,
+		Dir:        config.Tailscale.StateDir,
+		AuthKey:    config.Tailscale.AuthKey,
 	}
 
 	connector := &Connector{
