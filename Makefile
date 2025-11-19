@@ -10,4 +10,4 @@ test:
 
 .PHONY: test_acc
 test_acc:
-	go test -args acc -v ./...
+	go test -acc -v ./... -args
