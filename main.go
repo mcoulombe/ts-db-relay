@@ -1,11 +1,10 @@
 package main
 
 import (
-	"expvar"
+	"context"
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 
@@ -18,13 +17,16 @@ var (
 )
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	flag.Parse()
 
 	if *configFile == "" {
 		log.Fatal("missing --config flag: path to configuration file required")
 	}
 
-	config, err := LoadConfig(*configFile)
+	config, err := LoadConfigFromFile(*configFile)
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
@@ -53,29 +55,11 @@ func main() {
 		Dir:        localStorageDir,
 	}
 
-	tsClient, err := tsServer.LocalClient()
-	if err != nil {
-		log.Fatalf("unable to instantiate Tailscale Local client: %v", err)
+	connector := &Connector{
+		config: config,
 	}
-
-	for dbName, dbConfig := range config.Databases {
-		relay, err := NewRelay(&dbConfig, tsClient)
-		if err != nil {
-			log.Fatalf("failed to create relay for database %q: %v", dbName, err)
-		}
-
-		expvar.Publish(dbName, relay.Metrics())
-
-		relayListener, err := tsServer.Listen("tcp", fmt.Sprintf(":%d", dbConfig.Port))
-		if err != nil {
-			log.Fatalf("failed to listen on port %d for database %q: %v", dbConfig.Port, dbName, err)
-		}
-
-		log.Printf("serving access to %s (%s) on port %d", dbName, dbConfig.Host, dbConfig.Port)
-
-		go func(r Relay, l net.Listener, name string) {
-			log.Fatalf("relay for database %q ended: %v", name, r.Serve(l))
-		}(relay, relayListener, dbName)
+	if err := connector.Run(ctx, tsServer); err != nil {
+		log.Fatal(err)
 	}
 
 	mux := http.NewServeMux()
