@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"context"
@@ -13,6 +13,12 @@ import (
 
 type Connector struct {
 	config *Config
+}
+
+func NewConnector(config *Config) *Connector {
+	return &Connector{
+		config: config,
+	}
 }
 
 func (c *Connector) Run(ctx context.Context, s *tsnet.Server) error {

@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"context"
@@ -45,7 +45,7 @@ type pgWireRelay struct {
 	targetRole      string
 }
 
-func newPGWireRelay(dbKey string, dbCfg *DatabaseConfig, tsClient *local.Client) (*pgWireRelay, error) {
+func newPGWire(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*pgWireRelay, error) {
 	dbCA, err := os.ReadFile(dbCfg.CAFile)
 	if err != nil {
 		return nil, err

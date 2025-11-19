@@ -1,8 +1,7 @@
-package main
+package internal
 
 import (
 	"fmt"
-
 	"tailscale.com/client/local"
 )
 
@@ -17,26 +16,26 @@ const (
 
 type engineInfo struct {
 	defaultPort  int
-	newRelayFunc func(string, *DatabaseConfig, *local.Client) (Relay, error)
+	newRelayFunc func(string, *DBConfig, *local.Client) (Relay, error)
 }
 
 var engines = map[DBEngine]engineInfo{
 	DBEnginePostgres: {
 		defaultPort: 5432,
-		newRelayFunc: func(dbKey string, cfg *DatabaseConfig, client *local.Client) (Relay, error) {
-			return newPGWireRelay(dbKey, cfg, client)
+		newRelayFunc: func(dbKey string, cfg *DBConfig, client *local.Client) (Relay, error) {
+			return newPGWire(dbKey, cfg, client)
 		},
 	},
 	DBEngineCockroach: {
 		defaultPort: 26257,
-		newRelayFunc: func(dbKey string, cfg *DatabaseConfig, client *local.Client) (Relay, error) {
-			return newPGWireRelay(dbKey, cfg, client)
+		newRelayFunc: func(dbKey string, cfg *DBConfig, client *local.Client) (Relay, error) {
+			return newPGWire(dbKey, cfg, client)
 		},
 	},
 	DBEngineMongoDB: {
 		defaultPort: 27017,
-		newRelayFunc: func(dbKey string, cfg *DatabaseConfig, client *local.Client) (Relay, error) {
-			return newMongoRelay(dbKey, cfg, client)
+		newRelayFunc: func(dbKey string, cfg *DBConfig, client *local.Client) (Relay, error) {
+			return newMongo(dbKey, cfg, client)
 		},
 	},
 }
@@ -59,7 +58,7 @@ func (e DBEngine) DefaultPort() int {
 }
 
 // NewRelay creates a new Relay implementation for the database engine
-func (e DBEngine) NewRelay(dbKey string, dbCfg *DatabaseConfig, tsClient *local.Client) (Relay, error) {
+func (e DBEngine) NewRelay(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (Relay, error) {
 	info, ok := engines[e]
 	if !ok {
 		return nil, fmt.Errorf("unsupported engine %q", e)

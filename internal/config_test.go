@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"fmt"
@@ -83,7 +83,7 @@ func TestParseConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "https://login.tailscale.com", config.Tailscale.ControlURL)
-	assert.Equal(t, "./data/ts-db-connector", config.Tailscale.StateDir)
+	assert.Equal(t, "../data/ts-db-connector", config.Tailscale.StateDir)
 	assert.Equal(t, "ts-db-connector", config.Tailscale.Hostname)
 	assert.Equal(t, 8080, config.Connector.AdminPort)
 
