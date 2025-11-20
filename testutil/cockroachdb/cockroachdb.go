@@ -27,7 +27,7 @@ func StartCockroachDB(t *testing.T, ctx context.Context, certDir, db, adminUser,
 		}),
 		cockroachdb.WithDatabase(db),
 		cockroachdb.WithUser("root"),
-		cockroachdb.WithInitScripts("testutil/cockroachdb/db-init.sh"),
+		cockroachdb.WithInitScripts("../testutil/cockroachdb/db-init.sh"),
 		testcontainers.WithMounts(testcontainers.ContainerMount{
 			Source: testcontainers.GenericBindMountSource{
 				HostPath: certDir,

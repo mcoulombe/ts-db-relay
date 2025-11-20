@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/netip"
 	"os"
+	"strings"
+	"tailscale.com/tailcfg"
 	"testing"
 	"time"
 
@@ -13,13 +17,94 @@ import (
 	"github.com/tailscale/ts-db-connector/testutil/cockroachdb"
 	"github.com/tailscale/ts-db-connector/testutil/postgres"
 	"github.com/tailscale/ts-db-connector/testutil/tailscale"
-	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
-func TestPostgresRelay(t *testing.T) {
+const ACCTEST_TIMEOUT = 120 * time.Second
+
+type TestTailnet struct {
+	ControlURL  string
+	GrantAppCap func(appCap string, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic)
+}
+
+func TestRelaysUsingFakeControl(t *testing.T) {
 	testutil.SkipUnlessAcc(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	controlURL, control := tailscale.FakeControlStart(t)
+	testTailnet := TestTailnet{
+		ControlURL: controlURL,
+		GrantAppCap: func(appCap string, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
+			tailscale.FakeControlGrantAppCaps(t, appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey, control)
+		},
+	}
+
+	t.Run("test Postgres relay", func(t *testing.T) {
+		testTailnet.TestPostgresRelay(t)
+	})
+
+	t.Run("test CockroachDB relay", func(t *testing.T) {
+		testTailnet.TestCockroachDBRelay(t)
+	})
+}
+
+func TestRelaysUsingDevControl(t *testing.T) {
+	testutil.SkipUnlessAccDevControl(t)
+
+	apiKey := devControlReadAPIKey(t)
+	testTailnet := TestTailnet{
+		ControlURL: "http://localhost:31544",
+		GrantAppCap: func(appCap string, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
+			devControlGrantAppCap(t, appCap, apiKey)
+		},
+	}
+
+	t.Run("test Postgres relay", func(t *testing.T) {
+		testTailnet.TestPostgresRelay(t)
+	})
+
+	t.Run("test CockroachDB relay", func(t *testing.T) {
+		testTailnet.TestCockroachDBRelay(t)
+	})
+}
+
+func devControlReadAPIKey(t *testing.T) string {
+	type APIKeyJSON struct {
+		ApiKey string `json:"apiKey"`
+	}
+	content, err := os.ReadFile("/tmp/terraform-api-key.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Content: %s", content)
+	var data APIKeyJSON
+	err = json.Unmarshal(content, &data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("API Key: %s", data.ApiKey)
+	return data.ApiKey
+}
+
+func devControlGrantAppCap(t *testing.T, appCaps string, apiKey string) {
+	url := "http://localhost:31544/api/v2/tailnet/-/acl"
+
+	acl := fmt.Sprintf(`{
+			    "grants": [
+				  {"src": ["*"], "dst": ["*"], "ip": ["tcp:*"], "app": {%q: [%s]}}
+            ]}`, tsDBCap, appCaps)
+	t.Logf("Overwriting ACL with: %s", acl)
+	payload := strings.NewReader(acl)
+	req, _ := http.NewRequest("POST", url, payload)
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+	res, _ := http.DefaultClient.Do(req)
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	t.Logf("API response: %s", body)
+}
+
+func (tt TestTailnet) TestPostgresRelay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), ACCTEST_TIMEOUT)
 	defer cancel()
 
 	// Disable ryuk to avoid the overhead of running another container on every test run.
@@ -42,14 +127,11 @@ func TestPostgresRelay(t *testing.T) {
 	configJSON := formatConfigJSON(t, "postgres", dbInstance, host, port, CAFile, adminUser, adminPassword)
 	appCap := formatAppCap(t, "postgres", dbInstance, dbName, port, clientRole)
 
-	controlURL, control := tailscale.StartControl(t)
-	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-connector")
+	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, tt.ControlURL, "test-db-connector")
 	defer connectorTsnet.Close()
-	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-client")
+	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, tt.ControlURL, "test-db-client")
 	defer clientTsnet.Close()
-	filterRules := formatFilterRules(clientIP, connectorIP, appCap)
-	tailscale.MustInjectFilterRules(t, control, connectorNodeKey, clientNodeKey, filterRules...)
-	tailscale.MustInjectFilterRules(t, control, clientNodeKey, connectorNodeKey)
+	tt.GrantAppCap(appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey)
 
 	// ====
 	// WHEN
@@ -109,10 +191,8 @@ func TestPostgresRelay(t *testing.T) {
 	t.Logf("Successfully inserted and queried database via connector")
 }
 
-func TestCockroachDBRelay(t *testing.T) {
-	testutil.SkipUnlessAcc(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func (tt TestTailnet) TestCockroachDBRelay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), ACCTEST_TIMEOUT)
 	defer cancel()
 
 	// Disable ryuk to avoid the overhead of running another container on every test run.
@@ -135,14 +215,11 @@ func TestCockroachDBRelay(t *testing.T) {
 	configJSON := formatConfigJSON(t, "cockroachdb", dbInstance, host, port, CAFile, adminUser, adminPassword)
 	appCap := formatAppCap(t, "cockroachdb", dbInstance, dbName, port, clientRole)
 
-	controlURL, control := tailscale.StartControl(t)
-	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-connector")
+	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, tt.ControlURL, "test-db-connector")
 	defer connectorTsnet.Close()
-	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-client")
+	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, tt.ControlURL, "test-db-client")
 	defer clientTsnet.Close()
-	filterRules := formatFilterRules(clientIP, connectorIP, appCap)
-	tailscale.MustInjectFilterRules(t, control, connectorNodeKey, clientNodeKey, filterRules...)
-	tailscale.MustInjectFilterRules(t, control, clientNodeKey, connectorNodeKey)
+	tt.GrantAppCap(appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey)
 
 	// ====
 	// WHEN
