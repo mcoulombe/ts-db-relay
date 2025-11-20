@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"encoding/json"
@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-const tsDBDatabaseCapability = "tailscale.test/cap/databases" // TODO change to tailscale.com once added to the official list
+const tsDBCap = "tailscale.com/cap/databases"
 
 // dbCapability represents the access grants for a specific database instance
 type dbCapability struct {

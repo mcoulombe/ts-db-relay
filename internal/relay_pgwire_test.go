@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"context"
@@ -163,7 +163,7 @@ func formatFilterRules(clientIP netip.Addr, connectorIP netip.Addr, connectorApp
 					netip.MustParsePrefix(fmt.Sprintf("%s/32", connectorIP)), // TODO: there must be a better way!?
 				},
 				CapMap: tailcfg.PeerCapMap{
-					tsDBDatabaseCapability: []tailcfg.RawMessage{
+					tsDBCap: []tailcfg.RawMessage{
 						tailcfg.RawMessage(connectorAppCap),
 					},
 				},

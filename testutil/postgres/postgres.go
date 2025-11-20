@@ -38,7 +38,7 @@ func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, ad
 		}),
 		postgres.WithUsername("postgres"),
 		postgres.WithDatabase(db),
-		postgres.WithOrderedInitScripts("testutil/postgres/pg-create-admin.sh", "testutil/postgres/pg-create-role.sh"),
+		postgres.WithOrderedInitScripts("../testutil/postgres/pg-create-admin.sh", "../testutil/postgres/pg-create-role.sh"),
 		testcontainers.WithMounts(testcontainers.ContainerMount{
 			Source: testcontainers.GenericBindMountSource{
 				HostPath: certDir,
@@ -56,7 +56,7 @@ func StartPostgres(t *testing.T, ctx context.Context, certDir, db, adminUser, ad
 				},
 				Files: []testcontainers.ContainerFile{
 					{
-						HostFilePath:      "testutil/postgres/pg_hba.conf",
+						HostFilePath:      "../testutil/postgres/pg_hba.conf",
 						ContainerFilePath: "/var/lib/postgresql/pg_hba.conf",
 						FileMode:          0600,
 					},

@@ -1,5 +1,5 @@
 data
-cmd
+bin/
 test-setup/tailscale-state
 ts-db-connector
 .config.hujson

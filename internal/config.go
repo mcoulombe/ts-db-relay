@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultControlURL = "https://login.tailscale.com"
-	defaultStateDir   = "./data/ts-db-connector"
+	defaultStateDir   = "../data/ts-db-connector"
 	defaultHostname   = "ts-db-connector"
 	defaultAdminPort  = 8080
 	defaultHost       = "localhost"
@@ -42,9 +42,9 @@ type Config struct {
 	// Tailscale contains global config fields governing how to interact with the control server
 	Tailscale TailscaleConfig `json:"tailscale"`
 	// Connector contains global config fields for the main process
-	Connector ConnectorConfig `json:"connector"`
+	Connector ServerConfig `json:"connector"`
 	// Databases contain config fields for all database instances the Connector can manage and serve connections to
-	Databases map[string]DatabaseConfig `json:"databases"`
+	Databases map[string]DBConfig `json:"databases"`
 }
 
 // TailscaleConfig holds Tailscale-specific configuration.
@@ -73,15 +73,15 @@ type TailscaleConfig struct {
 	IDToken string `json:"id_token"`
 }
 
-// ConnectorConfig holds connector server configuration
-type ConnectorConfig struct {
+// ServerConfig holds connector server configuration
+type ServerConfig struct {
 	// AdminPort is the HTTP port that serves the debug endpoints
 	// Defaults to 8080
 	AdminPort int `json:"admin_port,omitzero"`
 }
 
-// DatabaseConfig holds database connection configuration
-type DatabaseConfig struct {
+// DBConfig holds database connection configuration
+type DBConfig struct {
 	// Engine is the type of database, e.g. postgres
 	Engine DBEngine `json:"engine"`
 

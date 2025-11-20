@@ -1,11 +1,12 @@
-package main
+package internal
 
 import (
 	"crypto/x509"
 	"fmt"
-	"github.com/pkg/errors"
 	"net"
 	"os"
+
+	"github.com/pkg/errors"
 	"tailscale.com/client/local"
 	"tailscale.com/metrics"
 )
@@ -28,7 +29,7 @@ type mongoRelay struct {
 	targetRole      string
 }
 
-func newMongoRelay(dbKey string, dbCfg *DatabaseConfig, tsClient *local.Client) (*mongoRelay, error) {
+func newMongo(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*mongoRelay, error) {
 	if dbCfg.CAFile == "" {
 		return nil, fmt.Errorf("ca_file is required for MongoDB TLS connections")
 	}
