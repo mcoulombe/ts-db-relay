@@ -1,7 +1,9 @@
 package tailscale
 
 import (
+	"fmt"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"tailscale.com/net/netns"
@@ -12,7 +14,7 @@ import (
 	"tailscale.com/types/logger"
 )
 
-func StartControl(t *testing.T) (controlURL string, control *testcontrol.Server) {
+func FakeControlStart(t *testing.T) (controlURL string, control *testcontrol.Server) {
 	t.Helper()
 
 	// Corp#4520: don't use netns for tests.
@@ -61,5 +63,40 @@ func MustInjectFilterRules(t *testing.T, control *testcontrol.Server, nodeKey ke
 
 	if !control.AddRawMapResponse(nodeKey, mapResponse) {
 		t.Fatalf("failed to inject raw MapResponse for node with key %s", nodeKey)
+	}
+}
+
+func FakeControlGrantAppCaps(t *testing.T, appCaps string, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic, control *testcontrol.Server) {
+	filterRules := FormatFilterRules(clientIP, connectorIP, appCaps)
+	MustInjectFilterRules(t, control, connectorNodeKey, clientNodeKey, filterRules...)
+	MustInjectFilterRules(t, control, clientNodeKey, connectorNodeKey)
+}
+
+const tsDBDatabaseCapability = "tailscale.com/cap/databases"
+
+func FormatFilterRules(clientIP netip.Addr, connectorIP netip.Addr, connectorAppCap string) []tailcfg.FilterRule {
+	return []tailcfg.FilterRule{
+		{
+			SrcIPs: []string{clientIP.String()},
+			DstPorts: []tailcfg.NetPortRange{
+				{
+					IP:    fmt.Sprintf("%s/32", connectorIP),
+					Ports: tailcfg.PortRange{First: 0, Last: 65535},
+				},
+			},
+		},
+		{
+			SrcIPs: []string{clientIP.String()},
+			CapGrant: []tailcfg.CapGrant{{
+				Dsts: []netip.Prefix{
+					netip.MustParsePrefix(fmt.Sprintf("%s/32", connectorIP)),
+				},
+				CapMap: tailcfg.PeerCapMap{
+					tsDBDatabaseCapability: []tailcfg.RawMessage{
+						tailcfg.RawMessage(connectorAppCap),
+					},
+				},
+			}},
+		},
 	}
 }
