@@ -219,14 +219,9 @@ Sensitive information should always be provided from a secured reference.
 11. Connect to the databases over Tailscale, works from anywhere without credentials. All databases are accessible via the ts-db-connector hostname on their respective ports.
 
     ```bash
-    # Connect to Postgres
-    psql -h ts-db-connector -p 5432 -U test -d testdb
-
-    # Connect to CockroachDB
-    psql -h ts-db-connector -p 26257 -U test -d testdb
-
-    # Connect to MongoDB
-    mongosh "mongodb://test:test@ts-db-connector:27017/testdb"
+    psql "host=ts-db-connector port=5432 dbname=testdb user=test sslmode=require"
+    psql "host=ts-db-connector port=26257 dbname=testdb user=test sslmode=require"
+    mongosh "mongodb://test:test@ts-db-connector:27017/testdb?tls=true&tlsAllowInvalidCertificates=true"
     ```
     
 ## Testing
