@@ -2,17 +2,12 @@ package internal
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/md5"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"os"
 	"time"
@@ -20,7 +15,6 @@ import (
 	"github.com/jackc/pgproto3/v2"
 	"github.com/openbao/openbao/plugins/database/postgresql"
 	"github.com/openbao/openbao/sdk/v2/database/dbplugin/v5"
-	"github.com/xdg-go/scram"
 	"tailscale.com/client/local"
 	"tailscale.com/metrics"
 )
@@ -28,21 +22,9 @@ import (
 var _ Relay = (*pgWireRelay)(nil)
 
 type pgWireRelay struct {
-	base
+	relay
 
-	dbKey          string
-	dbEngine       DBEngine
-	dbHost         string
-	dbPort         int
-	dbAdminUser    string
-	dbAdminPass    string
-	dbCertPool     *x509.CertPool
-	downstreamCert []tls.Certificate
-
-	sessionDatabase string
-	sessionRole     string
-	sessionPassword string
-	targetRole      string
+	startupMessagesCache []pgproto3.BackendMessage
 }
 
 func newPGWire(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*pgWireRelay, error) {
@@ -54,83 +36,102 @@ func newPGWire(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*pgWireRe
 	if !dbCertPool.AppendCertsFromPEM(dbCA) {
 		return nil, fmt.Errorf("invalid CA cert in %q", dbCfg.CAFile)
 	}
-	downstreamCert, err := mkSelfSigned(dbCfg.Host)
+	relayCert, err := GenerateSelfSignedCert(dbCfg.Host)
 	if err != nil {
 		return nil, err
 	}
 
 	r := &pgWireRelay{
-		dbKey:          dbKey,
-		dbEngine:       dbCfg.Engine,
-		dbHost:         dbCfg.Host,
-		dbPort:         dbCfg.Port,
-		dbAdminUser:    dbCfg.AdminUser,
-		dbAdminPass:    dbCfg.AdminPassword,
-		dbCertPool:     dbCertPool,
-		downstreamCert: []tls.Certificate{downstreamCert},
-	}
-
-	r.base = base{
-		serve:    r.serve,
-		tsClient: tsClient,
-		metrics: &relayMetrics{
-			errors: metrics.LabelMap{Label: "kind"},
+		relay: relay{
+			dbKey:       dbKey,
+			dbEngine:    dbCfg.Engine,
+			dbHost:      dbCfg.Host,
+			dbPort:      dbCfg.Port,
+			dbAdminUser: dbCfg.AdminUser,
+			dbAdminPass: dbCfg.AdminPassword,
+			dbCertPool:  dbCertPool,
+			relayCert:   []tls.Certificate{relayCert},
+			tsClient:    tsClient,
+			metrics: &relayMetrics{
+				errors: metrics.LabelMap{Label: "kind"},
+			},
 		},
 	}
+	r.concrete = r
 
-	err = r.initSecretsEngine()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database secrets engine: %v", err)
+	if err = r.initSecretsEngine(); err != nil {
+		return nil, err
 	}
 
 	return r, nil
 }
 
 func (r *pgWireRelay) initSecretsEngine() error {
-	pluginInterface, err := postgresql.New()
+	plugin, err := postgresql.New()
 	if err != nil {
-		return fmt.Errorf("failed to create PostgreSQL plugin: %v", err)
+		return fmt.Errorf("failed to create PostgreSQL engine: %v", err)
 	}
 
-	plugin, ok := pluginInterface.(dbplugin.Database)
+	secretsEngine, ok := plugin.(dbplugin.Database)
 	if !ok {
 		return fmt.Errorf("plugin does not implement Database interface")
 	}
 
+	// TODO(max) make the ssl mode configurable or detect the stricter mode we can use if we have a cert on hand
 	connectionURL := fmt.Sprintf("postgresql://%s:%s@%s:%d/postgres?sslmode=require",
 		r.dbAdminUser, r.dbAdminPass, r.dbHost, r.dbPort)
 
-	_, err = plugin.Initialize(context.Background(), dbplugin.InitializeRequest{
+	_, err = secretsEngine.Initialize(context.Background(), dbplugin.InitializeRequest{
 		Config: map[string]interface{}{
 			"connection_url": connectionURL,
 		},
 		VerifyConnection: true,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to initialize PostgreSQL plugin: %v", err)
+		return fmt.Errorf("failed to initialize PostgreSQL secrets engine: %v", err)
 	}
 
-	r.secretsEngine = plugin
+	r.secretsEngine = secretsEngine
 	return nil
 }
 
-func (r *pgWireRelay) serve(tsConn net.Conn) error {
-	defer tsConn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, clientConn, err := r.handleSSLNegotiation(ctx, tsConn)
-	if err != nil {
-		r.base.metrics.errors.Add("ssl-negotiation", 1)
-		return fmt.Errorf("SSL negotiation: %w", err)
+func (r *pgWireRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn) (net.Conn, error) {
+	// Read first 8 bytes to check for SSL request
+	buf := make([]byte, 8)
+	if _, err := io.ReadFull(tsConn, buf); err != nil {
+		return nil, fmt.Errorf("reading TLS negotiation request: %w", err)
 	}
 
-	clientBackend := pgproto3.NewBackend(pgproto3.NewChunkReader(clientConn), clientConn)
+	// Check if it's an SSL request (magic bytes: length=8, code=80877103)
+	if buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 8 &&
+		buf[4] == 0x04 && buf[5] == 0xd2 && buf[6] == 0x16 && buf[7] == 0x2f {
+		// Client wants TLS - send 'S' to accept
+		if _, err := tsConn.Write([]byte{'S'}); err != nil {
+			return nil, fmt.Errorf("sending TLS accept: %w", err)
+		}
+
+		// Perform TLS handshake using shared helper
+		tlsConn := tls.Server(tsConn, &tls.Config{
+			ServerName:   r.dbHost,
+			Certificates: r.relayCert,
+			MinVersion:   tls.VersionTLS12,
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, fmt.Errorf("TLS handshake failed: %w", err)
+		}
+		return tlsConn, nil
+	}
+
+	// Not a TLS request - return buffered connection with the bytes we already read
+	return NewBufferedConn(tsConn, buf), nil
+}
+
+func (r *pgWireRelay) parseHandshake(conn net.Conn) (string, string, map[string]string, error) {
+	clientBackend := pgproto3.NewBackend(pgproto3.NewChunkReader(conn), conn)
 	startupMsg, err := clientBackend.ReceiveStartupMessage()
 	if err != nil {
-		r.base.metrics.errors.Add("startup-message", 1)
-		return fmt.Errorf("receiving startup message: %w", err)
+		r.relay.metrics.errors.Add("startup-message", 1)
+		return "", "", nil, fmt.Errorf("receiving startup message: %w", err)
 	}
 
 	var params map[string]string
@@ -138,74 +139,26 @@ func (r *pgWireRelay) serve(tsConn net.Conn) error {
 	case *pgproto3.StartupMessage:
 		params = msg.Parameters
 	case *pgproto3.SSLRequest:
-		return fmt.Errorf("unexpected SSL request after negotiation")
+		return "", "", nil, fmt.Errorf("unexpected SSL request after negotiation")
 	default:
-		return fmt.Errorf("unexpected startup message type: %T", msg)
+		return "", "", nil, fmt.Errorf("unexpected startup message type: %T", msg)
 	}
 
-	r.targetRole = params["user"]
-	r.sessionDatabase = params["database"]
-	if r.sessionDatabase == "" {
-		r.sessionDatabase = r.targetRole
+	username := params["user"]
+	database := params["database"]
+	if database == "" {
+		database = username
 	}
 
-	user, machine, capabilities, err := r.getClientIdentity(ctx, tsConn)
-	if err != nil {
-		r.base.metrics.errors.Add("authentication", 1)
-		return err
-	}
-
-	allowed, err := r.hasAccess(user, machine, r.dbKey, string(r.dbEngine), r.sessionDatabase, r.targetRole, capabilities)
-	if err != nil {
-		r.base.metrics.errors.Add("authentication", 1)
-		return err
-	}
-	if !allowed {
-		r.base.metrics.errors.Add("authorization", 1)
-		backend := pgproto3.NewBackend(pgproto3.NewChunkReader(clientConn), clientConn)
-		backend.Send(&pgproto3.ErrorResponse{
-			Severity: "FATAL",
-			Code:     "28000",
-			Message:  "access denied",
-		})
-		return fmt.Errorf("access denied for user %s to database %s as role %s", user, r.sessionDatabase, r.targetRole)
-	}
-
-	err = r.createSessionUser(ctx)
-	if err != nil {
-		r.base.metrics.errors.Add("seed-credentials", 1)
-		return err
-	}
-	defer r.deleteSessionUser(ctx)
-
-	dbConn, dbFrontend, err := r.connectToDatabase(ctx, params)
-	if err != nil {
-		r.base.metrics.errors.Add("database-connection", 1)
-		return fmt.Errorf("connecting to database: %w", err)
-	}
-	defer dbConn.Close()
-
-	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, r.sessionRole)
-	if err != nil {
-		r.base.metrics.errors.Add("audit-file-create-failed", 1)
-		return fmt.Errorf("failed to create audit file: %v", err)
-	}
-	defer auditFile.Close()
-
-	r.base.metrics.startedSessions.Add(1)
-	r.base.metrics.activeSessions.Add(1)
-	defer r.base.metrics.activeSessions.Add(-1)
-
-	return r.proxyConnection(clientBackend, dbFrontend, auditFile)
+	return username, database, params, nil
 }
 
 func (r *pgWireRelay) createSessionUser(ctx context.Context) error {
-	passwordBytes := make([]byte, 32)
-	if _, err := rand.Read(passwordBytes); err != nil {
-		r.base.metrics.errors.Add("password-generation-failed", 1)
-		return fmt.Errorf("failed to generate random password: %v", err)
+	generatedPassword, err := GenerateSecurePassword()
+	if err != nil {
+		r.relay.metrics.errors.Add("password-generation-failed", 1)
+		return err
 	}
-	generatedPassword := hex.EncodeToString(passwordBytes)
 
 	creationStatements := dbplugin.Statements{
 		Commands: []string{
@@ -230,7 +183,7 @@ func (r *pgWireRelay) createSessionUser(ctx context.Context) error {
 
 	resp, err := r.secretsEngine.NewUser(ctx, newUserReq)
 	if err != nil {
-		r.base.metrics.errors.Add("plugin-newuser-failed", 1)
+		r.relay.metrics.errors.Add("plugin-newuser-failed", 1)
 		return fmt.Errorf("failed to generate credentials for role %s: %v", r.targetRole, err)
 	}
 
@@ -257,52 +210,17 @@ func (r *pgWireRelay) deleteSessionUser(ctx context.Context) {
 
 	_, err := r.secretsEngine.DeleteUser(ctx, deleteReq)
 	if err != nil {
-		r.base.metrics.errors.Add("revoke-credentials-failed", 1)
+		r.relay.metrics.errors.Add("revoke-credentials-failed", 1)
 	}
 }
 
-// handleSSLNegotiation handles the SSL/TLS negotiation with the client
-func (r *pgWireRelay) handleSSLNegotiation(ctx context.Context, tsConn net.Conn) (bool, net.Conn, error) {
-	// Read first 8 bytes to check for SSL request
-	buf := make([]byte, 8)
-	if _, err := io.ReadFull(tsConn, buf); err != nil {
-		return false, nil, fmt.Errorf("reading SSL request: %w", err)
-	}
-
-	// Check if it's an SSL request (magic bytes: length=8, code=80877103)
-	if buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 8 &&
-		buf[4] == 0x04 && buf[5] == 0xd2 && buf[6] == 0x16 && buf[7] == 0x2f {
-		// Client wants SSL - send 'S' to accept
-		if _, err := tsConn.Write([]byte{'S'}); err != nil {
-			return false, nil, fmt.Errorf("sending SSL accept: %w", err)
-		}
-
-		// Perform TLS handshake
-		tlsConn := tls.Server(tsConn, &tls.Config{
-			ServerName:   r.dbHost,
-			Certificates: r.downstreamCert,
-			MinVersion:   tls.VersionTLS12,
-		})
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return false, nil, fmt.Errorf("TLS handshake: %w", err)
-		}
-		return true, tlsConn, nil
-	}
-
-	// Not an SSL request - create a buffer reader that includes the bytes we already read
-	// We need to prepend those bytes back to the connection
-	bufferedConn := &bufferedConn{Conn: tsConn, buf: buf}
-	return false, bufferedConn, nil
-}
-
-// connectToDatabase establishes a connection to the upstream database with our ephemeral credentials
-func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[string]string) (net.Conn, *pgproto3.Frontend, error) {
+func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[string]string) (net.Conn, error) {
 	// Dial the database
 	var d net.Dialer
 	d.Timeout = 10 * time.Second
 	dbConn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", r.dbHost, r.dbPort))
 	if err != nil {
-		return nil, nil, fmt.Errorf("dial: %w", err)
+		return nil, fmt.Errorf("dial: %w", err)
 	}
 
 	// Send SSL request to database
@@ -310,23 +228,23 @@ func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[st
 	buf, encodeErr := sslReq.Encode(nil)
 	if encodeErr != nil {
 		dbConn.Close()
-		return nil, nil, fmt.Errorf("encoding SSL request: %w", encodeErr)
+		return nil, fmt.Errorf("encoding SSL request: %w", encodeErr)
 	}
 	if _, err := dbConn.Write(buf); err != nil {
 		dbConn.Close()
-		return nil, nil, fmt.Errorf("sending SSL request: %w", err)
+		return nil, fmt.Errorf("sending SSL request: %w", err)
 	}
 
 	// Read SSL response
 	response := make([]byte, 1)
 	if _, err := io.ReadFull(dbConn, response); err != nil {
 		dbConn.Close()
-		return nil, nil, fmt.Errorf("reading SSL response: %w", err)
+		return nil, fmt.Errorf("reading SSL response: %w", err)
 	}
 
 	if response[0] != 'S' {
 		dbConn.Close()
-		return nil, nil, fmt.Errorf("database rejected SSL")
+		return nil, fmt.Errorf("database rejected SSL")
 	}
 
 	// Upgrade to TLS
@@ -337,7 +255,7 @@ func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[st
 	})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		dbConn.Close()
-		return nil, nil, fmt.Errorf("TLS handshake: %w", err)
+		return nil, fmt.Errorf("TLS handshake: %w", err)
 	}
 
 	// Create frontend for communication (relay acts as client to the database)
@@ -362,199 +280,56 @@ func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[st
 	startupBuf, encodeErr := startup.Encode(nil)
 	if encodeErr != nil {
 		tlsConn.Close()
-		return nil, nil, fmt.Errorf("encoding startup message: %w", encodeErr)
+		return nil, fmt.Errorf("encoding startup message: %w", encodeErr)
 	}
 	if _, err := tlsConn.Write(startupBuf); err != nil {
 		tlsConn.Close()
-		return nil, nil, fmt.Errorf("sending startup message: %w", err)
+		return nil, fmt.Errorf("sending startup message: %w", err)
 	}
 
 	// Handle authentication - but don't wait for ReadyForQuery
 	// We'll forward those messages to the client later
 	if err := r.handleUpstreamAuth(frontend); err != nil {
 		tlsConn.Close()
-		return nil, nil, fmt.Errorf("authentication: %w", err)
+		return nil, fmt.Errorf("authentication: %w", err)
 	}
 
-	return tlsConn, frontend, nil
+	return tlsConn, nil
 }
 
-// handleUpstreamAuth handles authentication with the upstream database
-// Returns IMMEDIATELY after receiving AuthenticationOk, without consuming any more messages
-func (r *pgWireRelay) handleUpstreamAuth(frontend *pgproto3.Frontend) error {
-	md5Hash := func(s string) string {
-		hash := md5.Sum([]byte(s))
-		return hex.EncodeToString(hash[:])
-	}
+func (r *pgWireRelay) sendAuthSuccessToClient(conn net.Conn) error {
+	clientBackend := pgproto3.NewBackend(pgproto3.NewChunkReader(conn), conn)
 
-	for {
-		msg, err := frontend.Receive()
-		if err != nil {
-			return fmt.Errorf("receiving auth message: %w", err)
-		}
-
-		switch msg := msg.(type) {
-		case *pgproto3.AuthenticationOk:
-			// Authentication already successful
-			return nil
-
-		case *pgproto3.AuthenticationCleartextPassword:
-			// Send cleartext password
-			pwdMsg := &pgproto3.PasswordMessage{Password: r.sessionPassword}
-			if err := frontend.Send(pwdMsg); err != nil {
-				return fmt.Errorf("sending password: %w", err)
-			}
-
-		case *pgproto3.AuthenticationMD5Password:
-			// Send MD5 password
-			md5Pwd := "md5" + md5Hash(md5Hash(r.sessionPassword+r.sessionRole)+string(msg.Salt[:]))
-			pwdMsg := &pgproto3.PasswordMessage{Password: md5Pwd}
-			if err := frontend.Send(pwdMsg); err != nil {
-				return fmt.Errorf("sending MD5 password: %w", err)
-			}
-
-		case *pgproto3.AuthenticationSASL:
-			// SCRAM-SHA-256 authentication
-			if err := r.handleSCRAMAuth(frontend, msg.AuthMechanisms); err != nil {
-				return fmt.Errorf("SCRAM auth: %w", err)
-			}
-
-		case *pgproto3.ErrorResponse:
-			return fmt.Errorf("database error: %s: %s", msg.Code, msg.Message)
-
-		default:
-			return fmt.Errorf("unexpected message during auth: %T", msg)
-		}
-	}
-}
-
-// handleSCRAMAuth handles SCRAM-SHA-256 authentication
-func (r *pgWireRelay) handleSCRAMAuth(frontend *pgproto3.Frontend, mechanisms []string) error {
-	// Check if SCRAM-SHA-256 is supported
-	supportsSHA256 := false
-	for _, mech := range mechanisms {
-		if mech == "SCRAM-SHA-256" {
-			supportsSHA256 = true
-			break
-		}
-	}
-	if !supportsSHA256 {
-		return fmt.Errorf("server doesn't support SCRAM-SHA-256")
-	}
-
-	// Create SCRAM client
-	scramClient, err := scram.SHA256.NewClient(r.sessionRole, r.sessionPassword, "")
-	if err != nil {
-		return fmt.Errorf("creating SCRAM client: %w", err)
-	}
-	conv := scramClient.NewConversation()
-
-	// Send initial client message
-	clientFirst, err := conv.Step("")
-	if err != nil {
-		return fmt.Errorf("SCRAM step 1: %w", err)
-	}
-
-	saslInitial := &pgproto3.SASLInitialResponse{
-		AuthMechanism: "SCRAM-SHA-256",
-		Data:          []byte(clientFirst),
-	}
-	if err := frontend.Send(saslInitial); err != nil {
-		return fmt.Errorf("sending SCRAM initial response: %w", err)
-	}
-
-	// Receive server-first message
-	msg, err := frontend.Receive()
-	if err != nil {
-		return fmt.Errorf("receiving SCRAM server-first: %w", err)
-	}
-
-	saslContinue, ok := msg.(*pgproto3.AuthenticationSASLContinue)
-	if !ok {
-		return fmt.Errorf("expected AuthenticationSASLContinue, got %T", msg)
-	}
-
-	// Send client-final message
-	clientFinal, err := conv.Step(string(saslContinue.Data))
-	if err != nil {
-		return fmt.Errorf("SCRAM step 2: %w", err)
-	}
-
-	saslResponse := &pgproto3.SASLResponse{
-		Data: []byte(clientFinal),
-	}
-	if err := frontend.Send(saslResponse); err != nil {
-		return fmt.Errorf("sending SCRAM response: %w", err)
-	}
-
-	// Receive server-final message
-	msg, err = frontend.Receive()
-	if err != nil {
-		return fmt.Errorf("receiving SCRAM server-final: %w", err)
-	}
-
-	switch msg := msg.(type) {
-	case *pgproto3.AuthenticationSASLFinal:
-		// Verify server signature
-		_, err = conv.Step(string(msg.Data))
-		if err != nil {
-			return fmt.Errorf("SCRAM step 3 (verify server): %w", err)
-		}
-		return nil
-
-	case *pgproto3.ErrorResponse:
-		return fmt.Errorf("SCRAM auth failed: %s: %s", msg.Code, msg.Message)
-
-	default:
-		return fmt.Errorf("unexpected message during SCRAM final: %T", msg)
-	}
-}
-
-// proxyConnection proxies messages between client and database with auditing
-func (r *pgWireRelay) proxyConnection(clientBackend *pgproto3.Backend, dbFrontend *pgproto3.Frontend, auditFile *os.File) error {
 	if err := clientBackend.Send(&pgproto3.AuthenticationOk{}); err != nil {
 		return fmt.Errorf("sending auth ok to client: %w", err)
 	}
 
-	if err := r.forwardStartupMessages(dbFrontend, clientBackend); err != nil {
-		return fmt.Errorf("error forwarding startup messages: %w", err)
+	for _, msg := range r.startupMessagesCache {
+		if err := clientBackend.Send(msg); err != nil {
+			return fmt.Errorf("sending startup message to client: %w", err)
+		}
 	}
+
+	return nil
+}
+
+func (r *pgWireRelay) proxyConnection(clientConn, dbConn net.Conn, auditFile *os.File) error {
+	clientBackend := pgproto3.NewBackend(pgproto3.NewChunkReader(clientConn), clientConn)
+	dbFrontend := pgproto3.NewFrontend(pgproto3.NewChunkReader(dbConn), dbConn)
 
 	errc := make(chan error, 2)
 
-	// Client -> Database
 	go func() {
 		errc <- r.proxyClientToDatabase(clientBackend, dbFrontend, auditFile)
 	}()
 
-	// Database -> Client
 	go func() {
 		errc <- r.proxyDatabaseToClient(dbFrontend, clientBackend)
 	}()
 
-	// Wait for first error
 	return <-errc
 }
 
-// forwardStartupMessages forwards initial parameter status and ready messages
-func (r *pgWireRelay) forwardStartupMessages(dbFrontend *pgproto3.Frontend, clientBackend *pgproto3.Backend) error {
-	for {
-		msg, err := dbFrontend.Receive()
-		if err != nil {
-			return err
-		}
-
-		if err := clientBackend.Send(msg); err != nil {
-			return err
-		}
-
-		if _, ok := msg.(*pgproto3.ReadyForQuery); ok {
-			return nil
-		}
-	}
-}
-
-// proxyClientToDatabase forwards messages from client to database with auditing
 func (r *pgWireRelay) proxyClientToDatabase(clientBackend *pgproto3.Backend, dbFrontend *pgproto3.Frontend, auditFile *os.File) error {
 	for {
 		msg, err := clientBackend.Receive()
@@ -580,7 +355,6 @@ func (r *pgWireRelay) proxyClientToDatabase(clientBackend *pgproto3.Backend, dbF
 	}
 }
 
-// proxyDatabaseToClient forwards messages from database to client
 func (r *pgWireRelay) proxyDatabaseToClient(dbFrontend *pgproto3.Frontend, clientBackend *pgproto3.Backend) error {
 	for {
 		msg, err := dbFrontend.Receive()
@@ -600,54 +374,132 @@ func (r *pgWireRelay) proxyDatabaseToClient(dbFrontend *pgproto3.Frontend, clien
 	}
 }
 
-func mkSelfSigned(hostname string) (tls.Certificate, error) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	pub := priv.Public()
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization: []string{"pgproxy"},
-		},
-		DNSNames:              []string{hostname},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, pub, priv)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	cert, err := x509.ParseCertificate(derBytes)
-	if err != nil {
-		return tls.Certificate{}, err
+func (r *pgWireRelay) handleUpstreamAuth(frontend *pgproto3.Frontend) error {
+	md5Hash := func(s string) string {
+		hash := md5.Sum([]byte(s))
+		return hex.EncodeToString(hash[:])
 	}
 
-	return tls.Certificate{
-		Certificate: [][]byte{derBytes},
-		PrivateKey:  priv,
-		Leaf:        cert,
-	}, nil
+	authenticated := false
+	r.startupMessagesCache = make([]pgproto3.BackendMessage, 0)
+
+	for {
+		msg, err := frontend.Receive()
+		if err != nil {
+			return fmt.Errorf("receiving auth message: %w", err)
+		}
+
+		switch msg := msg.(type) {
+		case *pgproto3.AuthenticationOk:
+			authenticated = true
+
+		case *pgproto3.AuthenticationCleartextPassword:
+			pwdMsg := &pgproto3.PasswordMessage{Password: r.sessionPassword}
+			if err := frontend.Send(pwdMsg); err != nil {
+				return fmt.Errorf("sending password: %w", err)
+			}
+
+		case *pgproto3.AuthenticationMD5Password:
+			md5Pwd := "md5" + md5Hash(md5Hash(r.sessionPassword+r.sessionRole)+string(msg.Salt[:]))
+			pwdMsg := &pgproto3.PasswordMessage{Password: md5Pwd}
+			if err := frontend.Send(pwdMsg); err != nil {
+				return fmt.Errorf("sending MD5 password: %w", err)
+			}
+
+		case *pgproto3.AuthenticationSASL:
+			if err := r.handleSCRAMAuth(frontend, msg.AuthMechanisms); err != nil {
+				return fmt.Errorf("SCRAM auth: %w", err)
+			}
+
+		case *pgproto3.ErrorResponse:
+			return fmt.Errorf("database error: %s: %s", msg.Code, msg.Message)
+
+		case *pgproto3.ParameterStatus, *pgproto3.BackendKeyData:
+			if authenticated {
+				r.startupMessagesCache = append(r.startupMessagesCache, msg)
+			}
+
+		case *pgproto3.ReadyForQuery:
+			if authenticated {
+				r.startupMessagesCache = append(r.startupMessagesCache, msg)
+				return nil
+			}
+			return fmt.Errorf("unexpected ReadyForQuery before authentication")
+
+		default:
+			if authenticated {
+				return fmt.Errorf("unexpected message after auth: %T", msg)
+			}
+			return fmt.Errorf("unexpected message during auth: %T", msg)
+		}
+	}
 }
 
-// bufferedConn wraps a connection with a buffer for data already read
-type bufferedConn struct {
-	net.Conn
-	buf     []byte
-	bufRead int
-}
-
-func (bc *bufferedConn) Read(p []byte) (n int, err error) {
-	// First, drain the buffer
-	if bc.bufRead < len(bc.buf) {
-		n = copy(p, bc.buf[bc.bufRead:])
-		bc.bufRead += n
-		return n, nil
+func (r *pgWireRelay) handleSCRAMAuth(frontend *pgproto3.Frontend, mechanisms []string) error {
+	supportsSHA256 := false
+	for _, mech := range mechanisms {
+		if mech == "SCRAM-SHA-256" {
+			supportsSHA256 = true
+			break
+		}
 	}
-	// Buffer drained, read from underlying connection
-	return bc.Conn.Read(p)
+	if !supportsSHA256 {
+		return fmt.Errorf("server doesn't support SCRAM-SHA-256")
+	}
+
+	scram, err := NewSCRAMConversation(r.sessionRole, r.sessionPassword)
+	if err != nil {
+		return err
+	}
+
+	clientFirst, err := scram.ClientFirst()
+	if err != nil {
+		return err
+	}
+
+	saslInitial := &pgproto3.SASLInitialResponse{
+		AuthMechanism: "SCRAM-SHA-256",
+		Data:          []byte(clientFirst),
+	}
+	if err := frontend.Send(saslInitial); err != nil {
+		return fmt.Errorf("sending SCRAM initial response: %w", err)
+	}
+
+	msg, err := frontend.Receive()
+	if err != nil {
+		return fmt.Errorf("receiving SCRAM server-first: %w", err)
+	}
+
+	saslContinue, ok := msg.(*pgproto3.AuthenticationSASLContinue)
+	if !ok {
+		return fmt.Errorf("expected AuthenticationSASLContinue, got %T", msg)
+	}
+
+	clientFinal, err := scram.ClientFinal(string(saslContinue.Data))
+	if err != nil {
+		return err
+	}
+
+	saslResponse := &pgproto3.SASLResponse{
+		Data: []byte(clientFinal),
+	}
+	if err := frontend.Send(saslResponse); err != nil {
+		return fmt.Errorf("sending SCRAM response: %w", err)
+	}
+
+	msg, err = frontend.Receive()
+	if err != nil {
+		return fmt.Errorf("receiving SCRAM server-final: %w", err)
+	}
+
+	switch msg := msg.(type) {
+	case *pgproto3.AuthenticationSASLFinal:
+		return scram.VerifyServerFinal(string(msg.Data))
+
+	case *pgproto3.ErrorResponse:
+		return fmt.Errorf("SCRAM auth failed: %s: %s", msg.Code, msg.Message)
+
+	default:
+		return fmt.Errorf("unexpected message during SCRAM final: %T", msg)
+	}
 }
