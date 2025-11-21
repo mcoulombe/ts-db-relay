@@ -22,7 +22,7 @@ func main() {
 
 	flag.Parse()
 
-	// TODO define well-known OS-dependant default locations such as ./.config.json or /etc/ts-db-connector/config.json
+	// TODO(max) define well-known OS-dependant default locations such as ./.config.json or /etc/ts-db-connector/config.json
 	if *configFile == "" {
 		log.Fatal("missing --config flag: path to configuration file required")
 	}
@@ -35,8 +35,8 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	// TODO determine if other Server config fields should be editable via the ts-db-connector config file
-	// TODO support client secret and workload identity on top of auth keys to join the tailnet
+	// TODO(max) determine if other Server config fields should be editable via the ts-db-connector config file
+	// TODO(gesa) support client secret and workload identity on top of auth keys to join the tailnet
 	tsServer := &tsnet.Server{
 		ControlURL: cfg.Tailscale.ControlURL,
 		Hostname:   cfg.Tailscale.Hostname,

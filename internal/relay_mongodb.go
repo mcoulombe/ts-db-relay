@@ -27,24 +27,11 @@ import (
 )
 
 var _ Relay = (*mongoRelay)(nil)
+var _ protocolHandler = (*mongoRelay)(nil)
 
 type mongoRelay struct {
-	base
+	relay
 
-	dbKey       string
-	dbEngine    DBEngine
-	dbHost      string
-	dbPort      int
-	dbAdminUser string
-	dbAdminPass string
-	dbCertPool  *x509.CertPool
-	relayCert   []tls.Certificate
-
-	// TODO(max) move session data outside the relay so the same instance can serve multiple connections
-	sessionDatabase   string
-	sessionRole       string
-	sessionPassword   string
-	targetRole        string
 	clientSASLPayload []byte
 }
 
@@ -63,21 +50,19 @@ func newMongo(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*mongoRela
 	}
 
 	r := &mongoRelay{
-		dbKey:       dbKey,
-		dbEngine:    dbCfg.Engine,
-		dbHost:      dbCfg.Host,
-		dbPort:      dbCfg.Port,
-		dbAdminUser: dbCfg.AdminUser,
-		dbAdminPass: dbCfg.AdminPassword,
-		dbCertPool:  dbCertPool,
-		relayCert:   []tls.Certificate{relayCert},
-	}
-
-	r.base = base{
-		serve:    r.serve,
-		tsClient: tsClient,
-		metrics: &relayMetrics{
-			errors: metrics.LabelMap{Label: "kind"},
+		relay: relay{
+			dbKey:       dbKey,
+			dbEngine:    dbCfg.Engine,
+			dbHost:      dbCfg.Host,
+			dbPort:      dbCfg.Port,
+			dbAdminUser: dbCfg.AdminUser,
+			dbAdminPass: dbCfg.AdminPassword,
+			dbCertPool:  dbCertPool,
+			relayCert:   []tls.Certificate{relayCert},
+			tsClient:    tsClient,
+			metrics: &relayMetrics{
+				errors: metrics.LabelMap{Label: "kind"},
+			},
 		},
 	}
 
@@ -86,6 +71,10 @@ func newMongo(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*mongoRela
 	}
 
 	return r, nil
+}
+
+func (r *mongoRelay) Serve(tsListener net.Listener) error {
+	return serve(&r.relay, r, tsListener)
 }
 
 func (r *mongoRelay) initSecretsEngine() error {
@@ -117,79 +106,6 @@ func (r *mongoRelay) initSecretsEngine() error {
 
 	r.secretsEngine = secretsEngine
 	return nil
-}
-
-func (r *mongoRelay) serve(tsConn net.Conn) error {
-	defer tsConn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	clientConn, err := r.handleTLSNegotiation(ctx, tsConn)
-	if err != nil {
-		r.base.metrics.errors.Add("tls-handshake", 1)
-		return fmt.Errorf("TLS handshake: %w", err)
-	}
-
-	username, database, err := r.parseHandshake(ctx, clientConn)
-	if err != nil {
-		r.base.metrics.errors.Add("handshake-parse", 1)
-		return fmt.Errorf("parsing handshake: %w", err)
-	}
-
-	r.targetRole = username
-	r.sessionDatabase = database
-	if r.sessionDatabase == "" {
-		r.sessionDatabase = "admin"
-	}
-
-	user, machine, capabilities, err := r.getClientIdentity(ctx, tsConn)
-	if err != nil {
-		r.base.metrics.errors.Add("authentication", 1)
-		return err
-	}
-
-	allowed, err := r.hasAccess(user, machine, r.dbKey, DBEngineMongoDB, r.sessionDatabase, r.targetRole, capabilities)
-	if err != nil {
-		r.base.metrics.errors.Add("authentication", 1)
-		return err
-	}
-	if !allowed {
-		r.base.metrics.errors.Add("authorization", 1)
-		return fmt.Errorf("access denied for user %s to database %s as role %s", user, r.sessionDatabase, r.targetRole)
-	}
-
-	err = r.createSessionUser(ctx)
-	if err != nil {
-		r.base.metrics.errors.Add("seed-credentials", 1)
-		return err
-	}
-	defer r.deleteSessionUser(ctx)
-
-	dbConn, err := r.connectToDatabase(ctx)
-	if err != nil {
-		r.base.metrics.errors.Add("database-connection", 1)
-		return fmt.Errorf("connecting to database: %w", err)
-	}
-	defer dbConn.Close()
-
-	if err := r.sendAuthSuccessToClient(clientConn); err != nil {
-		r.base.metrics.errors.Add("sasl-response", 1)
-		return fmt.Errorf("sending SASL success to client: %w", err)
-	}
-
-	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, r.sessionRole)
-	if err != nil {
-		r.base.metrics.errors.Add("audit-file-create-failed", 1)
-		return fmt.Errorf("failed to create audit file: %v", err)
-	}
-	defer auditFile.Close()
-
-	r.base.metrics.startedSessions.Add(1)
-	r.base.metrics.activeSessions.Add(1)
-	defer r.base.metrics.activeSessions.Add(-1)
-
-	return r.proxyConnection(clientConn, dbConn, auditFile)
 }
 
 func (r *mongoRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn) (net.Conn, error) {
@@ -297,33 +213,33 @@ func (r *mongoRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn) 
 	}
 }
 
-func (r *mongoRelay) parseHandshake(_ context.Context, conn net.Conn) (string, string, error) {
+func (r *mongoRelay) parseHandshake(conn net.Conn) (string, string, map[string]string, error) {
 	for {
 		header := make([]byte, 16)
 		if _, err := io.ReadFull(conn, header); err != nil {
-			return "", "", fmt.Errorf("reading message header: %w", err)
+			return "", "", nil, fmt.Errorf("reading message header: %w", err)
 		}
 
 		messageLength := int32(binary.LittleEndian.Uint32(header[0:4]))
 		opCode := int32(binary.LittleEndian.Uint32(header[12:16]))
 
 		if opCode != 2013 {
-			return "", "", fmt.Errorf("expected OP_MSG (2013), got %d", opCode)
+			return "", "", nil, fmt.Errorf("expected OP_MSG (2013), got %d", opCode)
 		}
 
 		bodyLength := messageLength - 16
 		body := make([]byte, bodyLength)
 		if _, err := io.ReadFull(conn, body); err != nil {
-			return "", "", fmt.Errorf("reading message body: %w", err)
+			return "", "", nil, fmt.Errorf("reading message body: %w", err)
 		}
 
 		if len(body) < 5 {
-			return "", "", fmt.Errorf("OP_MSG body too short: %d bytes", len(body))
+			return "", "", nil, fmt.Errorf("OP_MSG body too short: %d bytes", len(body))
 		}
 
 		var doc bson.D
 		if err := bson.Unmarshal(body[5:], &doc); err != nil {
-			return "", "", fmt.Errorf("unmarshaling message: %w", err)
+			return "", "", nil, fmt.Errorf("unmarshaling message: %w", err)
 		}
 
 		var saslStart bool
@@ -348,9 +264,13 @@ func (r *mongoRelay) parseHandshake(_ context.Context, conn net.Conn) (string, s
 			r.clientSASLPayload = payload
 			username, err := r.extractUsernameFromSASL(payload)
 			if err != nil {
-				return "", "", fmt.Errorf("extracting username from SASL: %w", err)
+				return "", "", nil, fmt.Errorf("extracting username from SASL: %w", err)
 			}
-			return username, database, nil
+			if database == "" {
+				database = "admin"
+			}
+
+			return username, database, make(map[string]string), nil
 		}
 	}
 }
@@ -358,7 +278,7 @@ func (r *mongoRelay) parseHandshake(_ context.Context, conn net.Conn) (string, s
 func (r *mongoRelay) createSessionUser(ctx context.Context) error {
 	generatedPassword, err := GenerateSecurePassword()
 	if err != nil {
-		r.base.metrics.errors.Add("password-generation-failed", 1)
+		r.relay.metrics.errors.Add("password-generation-failed", 1)
 		return err
 	}
 
@@ -382,7 +302,7 @@ func (r *mongoRelay) createSessionUser(ctx context.Context) error {
 
 	resp, err := r.secretsEngine.NewUser(ctx, newUserReq)
 	if err != nil {
-		r.base.metrics.errors.Add("plugin-newuser-failed", 1)
+		r.relay.metrics.errors.Add("plugin-newuser-failed", 1)
 		return fmt.Errorf("failed to generate credentials for role %s: %v", r.targetRole, err)
 	}
 
@@ -403,11 +323,11 @@ func (r *mongoRelay) deleteSessionUser(ctx context.Context) {
 
 	_, err := r.secretsEngine.DeleteUser(ctx, deleteReq)
 	if err != nil {
-		r.base.metrics.errors.Add("revoke-credentials-failed", 1)
+		r.relay.metrics.errors.Add("revoke-credentials-failed", 1)
 	}
 }
 
-func (r *mongoRelay) connectToDatabase(ctx context.Context) (net.Conn, error) {
+func (r *mongoRelay) connectToDatabase(ctx context.Context, params map[string]string) (net.Conn, error) {
 	var d net.Dialer
 	d.Timeout = 10 * time.Second
 	dbConn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", r.dbHost, r.dbPort))

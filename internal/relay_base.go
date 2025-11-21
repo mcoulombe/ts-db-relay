@@ -2,12 +2,16 @@ package internal
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"expvar"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/openbao/openbao/sdk/v2/database/dbplugin/v5"
 	"tailscale.com/client/local"
@@ -28,6 +32,35 @@ type Relay interface {
 	Metrics() expvar.Var
 }
 
+// relay provides common fields and helper methods for relay implementations.
+type relay struct {
+	// tsClient is the Tailscale client used for identity verification
+	tsClient *local.Client
+	// secretsEngine is the plugin used to manage users and credentials
+	secretsEngine dbplugin.Database
+	// metrics holds relay operation metrics
+	metrics *relayMetrics
+
+	// Common database configuration
+	dbKey       string
+	dbEngine    DBEngine
+	dbHost      string
+	dbPort      int
+	dbAdminUser string
+	dbAdminPass string
+
+	// Certificates for TLS connections to the database and clients
+	dbCertPool *x509.CertPool
+	relayCert  []tls.Certificate
+
+	// Session-specific fields
+	// TODO(max) move session data outside the relay so the same instance can serve multiple connections
+	targetRole      string
+	sessionDatabase string
+	sessionRole     string
+	sessionPassword string
+}
+
 // relayMetrics holds metrics about the relay's operation
 // which can be consulted on the debug endpoint.
 type relayMetrics struct {
@@ -39,50 +72,133 @@ type relayMetrics struct {
 	errors metrics.LabelMap
 }
 
-// base provides default implementations of common Relay methods.
-// It can be embedded in concrete relay implementations to avoid code duplication.
-type base struct {
-	// serve is the protocol-specific serve function that handles a single connection
-	serve func(net.Conn) error
+// protocolHandler defines protocol-specific operations that each relay must implement.
+// The methods are declared in the order they are called during connection handling.
+type protocolHandler interface {
+	// handleTLSNegotiation performs protocol-specific TLS negotiation with the client.
+	// Returns a connection that may be upgraded to TLS or buffered with already-read data.
+	handleTLSNegotiation(ctx context.Context, conn net.Conn) (net.Conn, error)
 
-	// tsClient is the Tailscale client used for identity verification
-	tsClient *local.Client
-	// secretsEngine is the OpenBao plugin used to manage users and credentials
-	secretsEngine dbplugin.Database
-	// metrics holds relay operation metrics
-	metrics *relayMetrics
+	// parseHandshake extracts authentication details from the client's initial handshake.
+	// Returns the requested username, database (or default if not specified), and any additional connection parameters.
+	parseHandshake(conn net.Conn) (username, database string, params map[string]string, err error)
+
+	// createSessionUser creates ephemeral database credentials for the current session.
+	createSessionUser(ctx context.Context) error
+
+	// deleteSessionUser revokes the ephemeral credentials created for the session.
+	deleteSessionUser(ctx context.Context)
+
+	// connectToDatabase establishes a connection to the upstream database using ephemeral credentials.
+	connectToDatabase(ctx context.Context, params map[string]string) (net.Conn, error)
+
+	// sendAuthSuccessToClient sends a protocol-specific authentication success message to the client.
+	sendAuthSuccessToClient(conn net.Conn) error
+
+	// proxyConnection bidirectionally proxies data between client and database, with optional query auditing.
+	proxyConnection(clientConn, dbConn net.Conn, auditFile *os.File) error
 }
 
-// Serve implements the default Serve method that listens for incoming connections
-// and delegates each connection to the serve function in a separate goroutine.
-func (b *base) Serve(tsListener net.Listener) error {
+// serve listens for incoming connections and serves each in a separate goroutine
+func serve(r *relay, handler protocolHandler, tsListener net.Listener) error {
 	for {
 		tsConn, err := tsListener.Accept()
 		if err != nil {
 			return err
 		}
 		go func() {
-			if err := b.serve(tsConn); err != nil {
+			if err := serveConnection(r, handler, tsConn); err != nil {
 				log.Printf("session ended with error: %v", err)
 			}
 		}()
 	}
 }
 
+// serveConnection handles a single database connection with common logic
+func serveConnection(r *relay, handler protocolHandler, tsConn net.Conn) error {
+	defer tsConn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	clientConn, err := handler.handleTLSNegotiation(ctx, tsConn)
+	if err != nil {
+		r.metrics.errors.Add("tls-negotiation", 1)
+		return fmt.Errorf("TLS negotiation: %w", err)
+	}
+
+	username, database, params, err := handler.parseHandshake(clientConn)
+	if err != nil {
+		r.metrics.errors.Add("handshake-parse", 1)
+		return fmt.Errorf("parsing handshake: %w", err)
+	}
+
+	r.targetRole = username
+	r.sessionDatabase = database
+
+	user, machine, capabilities, err := r.getClientIdentity(ctx, tsConn)
+	if err != nil {
+		r.metrics.errors.Add("authentication", 1)
+		return err
+	}
+
+	allowed, err := r.hasAccess(user, machine, r.dbKey, string(r.dbEngine), r.sessionDatabase, r.targetRole, capabilities)
+	if err != nil {
+		r.metrics.errors.Add("authentication", 1)
+		return err
+	}
+	if !allowed {
+		r.metrics.errors.Add("authorization", 1)
+		return fmt.Errorf("access denied for user %s to database %s as role %s", user, r.sessionDatabase, r.targetRole)
+	}
+
+	err = handler.createSessionUser(ctx)
+	if err != nil {
+		r.metrics.errors.Add("seed-credentials", 1)
+		return err
+	}
+	defer handler.deleteSessionUser(ctx)
+
+	dbConn, err := handler.connectToDatabase(ctx, params)
+	if err != nil {
+		r.metrics.errors.Add("database-connection", 1)
+		return fmt.Errorf("connecting to database: %w", err)
+	}
+	defer dbConn.Close()
+
+	if err := handler.sendAuthSuccessToClient(clientConn); err != nil {
+		r.metrics.errors.Add("auth-response", 1)
+		return fmt.Errorf("sending auth success to client: %w", err)
+	}
+
+	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, "session-user")
+	if err != nil {
+		r.metrics.errors.Add("audit-file-create-failed", 1)
+		return fmt.Errorf("failed to create audit file: %v", err)
+	}
+	defer auditFile.Close()
+
+	r.metrics.startedSessions.Add(1)
+	r.metrics.activeSessions.Add(1)
+	defer r.metrics.activeSessions.Add(-1)
+
+	return handler.proxyConnection(clientConn, dbConn, auditFile)
+}
+
 // Metrics implements the default Metrics method that returns relay metrics.
-func (b *base) Metrics() expvar.Var {
+func (r *relay) Metrics() expvar.Var {
 	ret := &metrics.Set{}
-	ret.Set("sessions_active", &b.metrics.activeSessions)
-	ret.Set("sessions_started", &b.metrics.startedSessions)
-	ret.Set("session_errors", &b.metrics.errors)
+	ret.Set("sessions_active", &r.metrics.activeSessions)
+	ret.Set("sessions_started", &r.metrics.startedSessions)
+	ret.Set("session_errors", &r.metrics.errors)
 	return ret
 }
 
 // getClientIdentity extracts user and machine information from Tailscale WhoIs
-func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, string, []tailcfg.RawMessage, error) {
-	whois, err := b.tsClient.WhoIs(ctx, conn.RemoteAddr().String())
+func (r *relay) getClientIdentity(ctx context.Context, conn net.Conn) (string, string, []tailcfg.RawMessage, error) {
+	whois, err := r.tsClient.WhoIs(ctx, conn.RemoteAddr().String())
 	if err != nil {
-		b.metrics.errors.Add("whois-failed", 1)
+		r.metrics.errors.Add("whois-failed", 1)
 		return "", "", nil, fmt.Errorf("unexpected error getting client identity: %v", err)
 	}
 
@@ -103,7 +219,7 @@ func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, st
 		}
 	}
 	if user == "" || machine == "" {
-		b.metrics.errors.Add("no-ts-identity", 1)
+		r.metrics.errors.Add("no-ts-identity", 1)
 		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
 	}
 
@@ -112,16 +228,16 @@ func (b *base) getClientIdentity(ctx context.Context, conn net.Conn) (string, st
 
 // hasAccess checks if the given Tailscale identity is authorized to access the specified database
 // according to the grants defined in the tailnet policy file.
-func (b *base) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
+func (r *relay) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
 	if capabilities == nil {
-		b.metrics.errors.Add("no-ts-db-database-capability", 1)
+		r.metrics.errors.Add("no-ts-db-database-capability", 1)
 		return false, fmt.Errorf("user %q on machine %q does not have ts-db-database capability", user, machine)
 	}
 
 	for _, capability := range capabilities {
 		var grantCap map[string]dbCapability
 		if err := json.Unmarshal([]byte(capability), &grantCap); err != nil {
-			b.metrics.errors.Add("capability-parse-error", 1)
+			r.metrics.errors.Add("capability-parse-error", 1)
 			return false, fmt.Errorf("failed to parse capability value: %v", err)
 		}
 
@@ -162,6 +278,6 @@ func (b *base) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole 
 		}
 	}
 
-	b.metrics.errors.Add("not-allowed-to-impersonate", 1)
+	r.metrics.errors.Add("not-allowed-to-impersonate", 1)
 	return false, fmt.Errorf("user %q is not allowed to access database %q as role %q", user, sessionDB, sessionRole)
 }

@@ -20,24 +20,11 @@ import (
 )
 
 var _ Relay = (*pgWireRelay)(nil)
+var _ protocolHandler = (*pgWireRelay)(nil)
 
 type pgWireRelay struct {
-	base
+	relay
 
-	dbKey       string
-	dbEngine    DBEngine
-	dbHost      string
-	dbPort      int
-	dbAdminUser string
-	dbAdminPass string
-	dbCertPool  *x509.CertPool
-	relayCert   []tls.Certificate
-
-	// TODO(max) move session data outside the relay so the same instance can serve multiple connections
-	sessionDatabase      string
-	sessionRole          string
-	sessionPassword      string
-	targetRole           string
 	startupMessagesCache []pgproto3.BackendMessage
 }
 
@@ -56,21 +43,19 @@ func newPGWire(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*pgWireRe
 	}
 
 	r := &pgWireRelay{
-		dbKey:       dbKey,
-		dbEngine:    dbCfg.Engine,
-		dbHost:      dbCfg.Host,
-		dbPort:      dbCfg.Port,
-		dbAdminUser: dbCfg.AdminUser,
-		dbAdminPass: dbCfg.AdminPassword,
-		dbCertPool:  dbCertPool,
-		relayCert:   []tls.Certificate{relayCert},
-	}
-
-	r.base = base{
-		serve:    r.serve,
-		tsClient: tsClient,
-		metrics: &relayMetrics{
-			errors: metrics.LabelMap{Label: "kind"},
+		relay: relay{
+			dbKey:       dbKey,
+			dbEngine:    dbCfg.Engine,
+			dbHost:      dbCfg.Host,
+			dbPort:      dbCfg.Port,
+			dbAdminUser: dbCfg.AdminUser,
+			dbAdminPass: dbCfg.AdminPassword,
+			dbCertPool:  dbCertPool,
+			relayCert:   []tls.Certificate{relayCert},
+			tsClient:    tsClient,
+			metrics: &relayMetrics{
+				errors: metrics.LabelMap{Label: "kind"},
+			},
 		},
 	}
 
@@ -79,6 +64,10 @@ func newPGWire(dbKey string, dbCfg *DBConfig, tsClient *local.Client) (*pgWireRe
 	}
 
 	return r, nil
+}
+
+func (r *pgWireRelay) Serve(tsListener net.Listener) error {
+	return serve(&r.relay, r, tsListener)
 }
 
 func (r *pgWireRelay) initSecretsEngine() error {
@@ -110,84 +99,11 @@ func (r *pgWireRelay) initSecretsEngine() error {
 	return nil
 }
 
-func (r *pgWireRelay) serve(tsConn net.Conn) error {
-	defer tsConn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, clientConn, err := r.handleTLSNegotiation(ctx, tsConn)
-	if err != nil {
-		r.base.metrics.errors.Add("tls-negotiation", 1)
-		return fmt.Errorf("TLS negotiation: %w", err)
-	}
-
-	username, database, params, err := r.parseHandshake(clientConn)
-	if err != nil {
-		r.base.metrics.errors.Add("handshake-parse", 1)
-		return fmt.Errorf("parsing handshake: %w", err)
-	}
-
-	r.targetRole = username
-	r.sessionDatabase = database
-	if r.sessionDatabase == "" {
-		r.sessionDatabase = r.targetRole
-	}
-
-	user, machine, capabilities, err := r.getClientIdentity(ctx, tsConn)
-	if err != nil {
-		r.base.metrics.errors.Add("authentication", 1)
-		return err
-	}
-
-	allowed, err := r.hasAccess(user, machine, r.dbKey, string(r.dbEngine), r.sessionDatabase, r.targetRole, capabilities)
-	if err != nil {
-		r.base.metrics.errors.Add("authentication", 1)
-		return err
-	}
-	if !allowed {
-		r.base.metrics.errors.Add("authorization", 1)
-		return fmt.Errorf("access denied for user %s to database %s as role %s", user, r.sessionDatabase, r.targetRole)
-	}
-
-	err = r.createSessionUser(ctx)
-	if err != nil {
-		r.base.metrics.errors.Add("seed-credentials", 1)
-		return err
-	}
-	defer r.deleteSessionUser(ctx)
-
-	dbConn, err := r.connectToDatabase(ctx, params)
-	if err != nil {
-		r.base.metrics.errors.Add("database-connection", 1)
-		return fmt.Errorf("connecting to database: %w", err)
-	}
-	defer dbConn.Close()
-
-	if err := r.sendAuthSuccessToClient(clientConn); err != nil {
-		r.base.metrics.errors.Add("auth-response", 1)
-		return fmt.Errorf("sending auth success to client: %w", err)
-	}
-
-	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, r.sessionRole)
-	if err != nil {
-		r.base.metrics.errors.Add("audit-file-create-failed", 1)
-		return fmt.Errorf("failed to create audit file: %v", err)
-	}
-	defer auditFile.Close()
-
-	r.base.metrics.startedSessions.Add(1)
-	r.base.metrics.activeSessions.Add(1)
-	defer r.base.metrics.activeSessions.Add(-1)
-
-	return r.proxyConnection(clientConn, dbConn, auditFile)
-}
-
-func (r *pgWireRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn) (bool, net.Conn, error) {
+func (r *pgWireRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn) (net.Conn, error) {
 	// Read first 8 bytes to check for SSL request
 	buf := make([]byte, 8)
 	if _, err := io.ReadFull(tsConn, buf); err != nil {
-		return false, nil, fmt.Errorf("reading TLS negotiation request: %w", err)
+		return nil, fmt.Errorf("reading TLS negotiation request: %w", err)
 	}
 
 	// Check if it's an SSL request (magic bytes: length=8, code=80877103)
@@ -195,7 +111,7 @@ func (r *pgWireRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn)
 		buf[4] == 0x04 && buf[5] == 0xd2 && buf[6] == 0x16 && buf[7] == 0x2f {
 		// Client wants TLS - send 'S' to accept
 		if _, err := tsConn.Write([]byte{'S'}); err != nil {
-			return false, nil, fmt.Errorf("sending TLS accept: %w", err)
+			return nil, fmt.Errorf("sending TLS accept: %w", err)
 		}
 
 		// Perform TLS handshake using shared helper
@@ -205,20 +121,20 @@ func (r *pgWireRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn)
 			MinVersion:   tls.VersionTLS12,
 		})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return false, nil, fmt.Errorf("TLS handshake failed: %w", err)
+			return nil, fmt.Errorf("TLS handshake failed: %w", err)
 		}
-		return true, tlsConn, nil
+		return tlsConn, nil
 	}
 
 	// Not a TLS request - return buffered connection with the bytes we already read
-	return false, NewBufferedConn(tsConn, buf), nil
+	return NewBufferedConn(tsConn, buf), nil
 }
 
 func (r *pgWireRelay) parseHandshake(conn net.Conn) (string, string, map[string]string, error) {
 	clientBackend := pgproto3.NewBackend(pgproto3.NewChunkReader(conn), conn)
 	startupMsg, err := clientBackend.ReceiveStartupMessage()
 	if err != nil {
-		r.base.metrics.errors.Add("startup-message", 1)
+		r.relay.metrics.errors.Add("startup-message", 1)
 		return "", "", nil, fmt.Errorf("receiving startup message: %w", err)
 	}
 
@@ -232,13 +148,19 @@ func (r *pgWireRelay) parseHandshake(conn net.Conn) (string, string, map[string]
 		return "", "", nil, fmt.Errorf("unexpected startup message type: %T", msg)
 	}
 
-	return params["user"], params["database"], params, nil
+	username := params["user"]
+	database := params["database"]
+	if database == "" {
+		database = username
+	}
+
+	return username, database, params, nil
 }
 
 func (r *pgWireRelay) createSessionUser(ctx context.Context) error {
 	generatedPassword, err := GenerateSecurePassword()
 	if err != nil {
-		r.base.metrics.errors.Add("password-generation-failed", 1)
+		r.relay.metrics.errors.Add("password-generation-failed", 1)
 		return err
 	}
 
@@ -265,7 +187,7 @@ func (r *pgWireRelay) createSessionUser(ctx context.Context) error {
 
 	resp, err := r.secretsEngine.NewUser(ctx, newUserReq)
 	if err != nil {
-		r.base.metrics.errors.Add("plugin-newuser-failed", 1)
+		r.relay.metrics.errors.Add("plugin-newuser-failed", 1)
 		return fmt.Errorf("failed to generate credentials for role %s: %v", r.targetRole, err)
 	}
 
@@ -292,7 +214,7 @@ func (r *pgWireRelay) deleteSessionUser(ctx context.Context) {
 
 	_, err := r.secretsEngine.DeleteUser(ctx, deleteReq)
 	if err != nil {
-		r.base.metrics.errors.Add("revoke-credentials-failed", 1)
+		r.relay.metrics.errors.Add("revoke-credentials-failed", 1)
 	}
 }
 
