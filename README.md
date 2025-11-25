@@ -220,13 +220,13 @@ Sensitive information should always be provided from a secured reference.
 
     ```bash
     # Connect to Postgres
-    psql -h ts-db-connector -p 5432 -U test -d testdb
+    PGSSLMODE=require psql -h ts-db-connector -p 5432 -U test -d testdb
 
     # Connect to CockroachDB
-    psql -h ts-db-connector -p 26257 -U test -d testdb
+    PGSSLMODE=require psql -h ts-db-connector -p 26257 -U test -d testdb
 
     # Connect to MongoDB
-    mongosh "mongodb://test:test@ts-db-connector:27017/testdb"
+    mongosh --host ts-db-connector --port 27017 -u test -p test --authenticationDatabase testdb --tls --tlsAllowInvalidCertificates testdb
     ```
     
 ## Testing
