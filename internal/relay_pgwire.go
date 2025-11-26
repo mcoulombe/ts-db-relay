@@ -24,6 +24,7 @@ var _ Relay = (*pgWireRelay)(nil)
 type pgWireRelay struct {
 	relay
 
+	// TODO(max) move session data outside the relay so the same instance can serve multiple connections
 	startupMessagesCache []pgproto3.BackendMessage
 }
 
@@ -126,7 +127,7 @@ func (r *pgWireRelay) handleTLSNegotiation(ctx context.Context, tsConn net.Conn)
 	return NewBufferedConn(tsConn, buf), nil
 }
 
-func (r *pgWireRelay) parseHandshake(conn net.Conn) (string, string, map[string]string, error) {
+func (r *pgWireRelay) parseHandshake(_ context.Context, conn net.Conn) (string, string, map[string]string, error) {
 	clientBackend := pgproto3.NewBackend(pgproto3.NewChunkReader(conn), conn)
 	startupMsg, err := clientBackend.ReceiveStartupMessage()
 	if err != nil {
@@ -193,9 +194,9 @@ func (r *pgWireRelay) createSessionUser(ctx context.Context) error {
 	return nil
 }
 
-func (r *pgWireRelay) deleteSessionUser(ctx context.Context) {
+func (r *pgWireRelay) deleteSessionUser(ctx context.Context) error {
 	if r.sessionRole == "" {
-		return
+		return nil
 	}
 
 	deleteReq := dbplugin.DeleteUserRequest{
@@ -211,7 +212,10 @@ func (r *pgWireRelay) deleteSessionUser(ctx context.Context) {
 	_, err := r.secretsEngine.DeleteUser(ctx, deleteReq)
 	if err != nil {
 		r.relay.metrics.errors.Add("revoke-credentials-failed", 1)
+		return err
 	}
+
+	return nil
 }
 
 func (r *pgWireRelay) connectToDatabase(ctx context.Context, clientParams map[string]string) (net.Conn, error) {

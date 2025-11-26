@@ -226,7 +226,7 @@ Sensitive information should always be provided from a secured reference.
     PGSSLMODE=require psql -h ts-db-connector -p 26257 -U test -d testdb
 
     # Connect to MongoDB
-    mongosh --host ts-db-connector --port 27017 -u test -p test --authenticationDatabase testdb --tls --tlsAllowInvalidCertificates testdb
+    mongosh "mongodb://test:test@ts-db-connector:27017/testdb?authSource=testdb&tls=true&tlsAllowInvalidCertificates=true&maxPoolSize=1"
     ```
     
 ## Testing
