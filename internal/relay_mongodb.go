@@ -137,6 +137,9 @@ func (r *mongoRelay) parseHandshake(ctx context.Context, conn net.Conn) (string,
 		// Get the next message from the client
 		doc, reqID, err := ReceiveMongoMessage(conn)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return "", "", nil, nil
+			}
 			return "", "", nil, fmt.Errorf("failed to read message: %w", err)
 		}
 

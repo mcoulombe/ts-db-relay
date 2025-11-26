@@ -4,7 +4,7 @@ import (
 	"context"
 	"expvar"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 
@@ -46,8 +46,10 @@ func (c *Connector) Run(ctx context.Context, s *tsnet.Server) error {
 		wg.Add(1)
 		go func(r Relay, l net.Listener, name string) {
 			defer wg.Done()
+
+			slog.Info("starting relay...", "database", dbKey, "port", dbConfig.Port, "engine", dbConfig.Engine)
 			if err := r.Serve(l); err != nil {
-				log.Printf("Relay for %q ended: %v", name, err)
+				slog.Error("failed to start relay", "database", dbKey, "port", dbConfig.Port, "error", err)
 			}
 		}(relay, relayListener, dbKey)
 	}
@@ -55,6 +57,7 @@ func (c *Connector) Run(ctx context.Context, s *tsnet.Server) error {
 	go func() {
 		<-ctx.Done()
 		for _, l := range listeners {
+			slog.Debug("shutting down relay listener", "listener", l.Addr().String())
 			l.Close()
 		}
 		wg.Wait()

@@ -86,6 +86,8 @@ func TestParseConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "../data/ts-db-connector", config.Tailscale.StateDir)
 	assert.Equal(t, "ts-db-connector", config.Tailscale.Hostname)
 	assert.Equal(t, 8080, config.Connector.AdminPort)
+	assert.Equal(t, "info", config.Connector.LogLevel)
+	assert.Equal(t, false, config.Connector.TailscaleLogsEnabled)
 
 	db := config.Databases["testdb"]
 	assert.Equal(t, "localhost", db.Host)
@@ -290,6 +292,15 @@ func TestParseConfig_ValidationErrors(t *testing.T) {
 			}`, validCAFile),
 			errMsg: `database "testdb": admin_password is required`,
 		},
+		{
+			name: "invalid log_level",
+			config: `{
+				"connector": {
+					"log_level": "trace"
+				}
+			}`,
+			errMsg: `connector.log_level: must be one of: debug, info, warn, error`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -315,6 +326,7 @@ func TestParseConfig_EnvVariableResolution(t *testing.T) {
 		os.Setenv("TS_CLIENT_ID", "custom-client-id")
 		os.Setenv("TS_CLIENT_SECRET", "custom-client-secret")
 		os.Setenv("ID_TOKEN", "custom-id-token")
+		os.Setenv("LOG_LEVEL", "debug")
 		defer func() {
 			os.Unsetenv("TS_SERVER")
 			os.Unsetenv("TS_STATE_DIR")
@@ -323,6 +335,7 @@ func TestParseConfig_EnvVariableResolution(t *testing.T) {
 			os.Unsetenv("TS_CLIENT_ID")
 			os.Unsetenv("TS_CLIENT_SECRET")
 			os.Unsetenv("ID_TOKEN")
+			os.Unsetenv("LOG_LEVEL")
 		}()
 
 		config := `{
@@ -340,6 +353,7 @@ func TestParseConfig_EnvVariableResolution(t *testing.T) {
 		assert.Equal(t, "custom-client-id", cfg.Tailscale.ClientID)
 		assert.Equal(t, "custom-client-secret", cfg.Tailscale.ClientSecret)
 		assert.Equal(t, "custom-id-token", cfg.Tailscale.IDToken)
+		assert.Equal(t, "debug", cfg.Connector.LogLevel)
 	})
 
 	t.Run("env: prefix", func(t *testing.T) {
@@ -450,7 +464,9 @@ func TestParseConfig_ValidComplete(t *testing.T) {
 			"authkey": "tskey-auth-test"
 		},
 		"connector": {
-			"admin_port": 9090
+			"admin_port": 9090,
+			"log_level": "warn",
+			"tailscale_logs_enabled": true
 		},
 		"databases": {
 			"pgdb": {
@@ -489,6 +505,8 @@ func TestParseConfig_ValidComplete(t *testing.T) {
 	assert.Equal(t, "my-connector", cfg.Tailscale.Hostname)
 	assert.Equal(t, "tskey-auth-test", cfg.Tailscale.AuthKey)
 	assert.Equal(t, 9090, cfg.Connector.AdminPort)
+	assert.Equal(t, "warn", cfg.Connector.LogLevel)
+	assert.Equal(t, true, cfg.Connector.TailscaleLogsEnabled)
 
 	assert.Len(t, cfg.Databases, 3)
 

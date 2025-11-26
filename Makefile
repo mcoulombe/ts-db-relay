@@ -23,7 +23,11 @@ run: dev
 		echo "Set it with: export TS_AUTHKEY=tskey-auth-1234"; \
 		echo ""; \
 	fi
-	./bin/ts-db-connector --config=$(CONFIG)
+	@if command -v grcat >/dev/null 2>&1; then \
+		./bin/ts-db-connector --config=$(CONFIG) 2>&1 | grcat .grc/slog.grc; \
+	else \
+		./bin/ts-db-connector --config=$(CONFIG); \
+	fi
 
 .PHONY: test
 test:
