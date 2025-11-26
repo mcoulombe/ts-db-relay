@@ -1,11 +1,16 @@
 package tailscale
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"testing"
 
+	"github.com/tailscale/ts-db-connector/pkg"
+	"tailscale.com/client/tailscale/v2"
 	"tailscale.com/net/netns"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
@@ -66,15 +71,21 @@ func MustInjectFilterRules(t *testing.T, control *testcontrol.Server, nodeKey ke
 	}
 }
 
-func FakeControlGrantAppCaps(t *testing.T, appCaps string, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic, control *testcontrol.Server) {
-	filterRules := FormatFilterRules(clientIP, connectorIP, appCaps)
+func FakeControlGrantAppCap(t *testing.T, appCaps map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic, control *testcontrol.Server) {
+	t.Helper()
+
+	rawAppCaps, err := json.Marshal(appCaps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filterRules := FormatFilterRules(t, clientIP, connectorIP, rawAppCaps)
 	MustInjectFilterRules(t, control, connectorNodeKey, clientNodeKey, filterRules...)
 	MustInjectFilterRules(t, control, clientNodeKey, connectorNodeKey)
 }
 
-const tsDBDatabaseCapability = "tailscale.com/cap/databases"
+func FormatFilterRules(t *testing.T, clientIP netip.Addr, connectorIP netip.Addr, connectorAppCap []byte) []tailcfg.FilterRule {
+	t.Helper()
 
-func FormatFilterRules(clientIP netip.Addr, connectorIP netip.Addr, connectorAppCap string) []tailcfg.FilterRule {
 	return []tailcfg.FilterRule{
 		{
 			SrcIPs: []string{clientIP.String()},
@@ -92,11 +103,43 @@ func FormatFilterRules(clientIP netip.Addr, connectorIP netip.Addr, connectorApp
 					netip.MustParsePrefix(fmt.Sprintf("%s/32", connectorIP)),
 				},
 				CapMap: tailcfg.PeerCapMap{
-					tsDBDatabaseCapability: []tailcfg.RawMessage{
+					pkg.TSDBCap: []tailcfg.RawMessage{
 						tailcfg.RawMessage(connectorAppCap),
 					},
 				},
 			}},
 		},
 	}
+}
+
+func ControlGrantAppCap(t *testing.T, appCaps map[string]any, controlURL string, apiKey string) {
+	t.Helper()
+
+	url, err := url.Parse(controlURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &tailscale.Client{
+		BaseURL: url,
+		APIKey:  apiKey,
+	}
+
+	acl := tailscale.ACL{
+		Grants: []tailscale.Grant{
+			{
+				Source:      []string{"*"},
+				Destination: []string{"*"},
+				IP:          []string{"tcp:*"},
+				App: map[string][]map[string]any{
+					pkg.TSDBCap: {appCaps},
+				},
+			},
+		},
+	}
+	t.Logf("Overwriting ACL with: %s", acl)
+	res, err := client.PolicyFile().SetAndGet(context.Background(), acl, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("API response: %s", res)
 }

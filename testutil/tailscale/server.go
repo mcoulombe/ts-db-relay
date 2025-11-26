@@ -6,12 +6,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"testing"
 
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 	"tailscale.com/types/key"
-	"testing"
 )
 
 func StartTsnetServer(t *testing.T, ctx context.Context, controlURL, hostname string) (*tsnet.Server, netip.Addr, key.NodePublic) {

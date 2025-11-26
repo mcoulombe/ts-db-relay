@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/openbao/openbao/sdk/v2/database/dbplugin/v5"
+	"github.com/tailscale/ts-db-connector/pkg"
 	"tailscale.com/client/local"
 	"tailscale.com/metrics"
 	"tailscale.com/tailcfg"
@@ -221,7 +222,7 @@ func (r *relay) getClientIdentity(ctx context.Context, conn net.Conn) (string, s
 		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
 	}
 
-	return user, machine, whois.CapMap[tailcfg.PeerCapability(tsDBCap)], nil
+	return user, machine, whois.CapMap[tailcfg.PeerCapability(pkg.TSDBCap)], nil
 }
 
 // hasAccess checks if the given Tailscale identity is authorized to access the specified database

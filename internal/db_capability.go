@@ -6,8 +6,6 @@ import (
 	"strconv"
 )
 
-const tsDBCap = "tailscale.com/cap/databases"
-
 // dbCapability represents the access grants for a specific database instance
 type dbCapability struct {
 	Engine string         `json:"engine,omitzero"`

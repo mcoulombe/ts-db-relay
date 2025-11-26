@@ -217,4 +217,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20250205023644-9414b50a5633 // indirect
 	honnef.co/go/tools v0.5.1 // indirect
+	tailscale.com/client/tailscale/v2 v2.3.0 // indirect
 )
