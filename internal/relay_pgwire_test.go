@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
@@ -13,22 +12,27 @@ import (
 	"github.com/tailscale/ts-db-connector/testutil/cockroachdb"
 	"github.com/tailscale/ts-db-connector/testutil/postgres"
 	"github.com/tailscale/ts-db-connector/testutil/tailscale"
-	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
-func TestPostgresRelay(t *testing.T) {
-	testutil.SkipUnlessAcc(t)
+const ACCTEST_TIMEOUT = 120 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
+func TestMain(m *testing.M) {
 	// Disable ryuk to avoid the overhead of running another container on every test run.
 	// It isn't required, as we're already running the container cleanup with defer on exit.
 	os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
+	os.Exit(m.Run())
+}
+
+func TestPostgresRelay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), ACCTEST_TIMEOUT)
+	defer cancel()
 
 	// =====
 	// GIVEN
 	// =====
+
+	control := setupControl(t)
 
 	dbInstance := "my-postgres-1"
 	dbName := "testdb"
@@ -40,16 +44,13 @@ func TestPostgresRelay(t *testing.T) {
 	host, port, cleanup := postgres.StartPostgres(t, ctx, certDir, dbName, adminUser, adminPassword, clientRole)
 	defer cleanup()
 	configJSON := formatConfigJSON(t, "postgres", dbInstance, host, port, CAFile, adminUser, adminPassword)
-	appCap := formatAppCap(t, "postgres", dbInstance, dbName, port, clientRole)
+	appCap := formatAppCap(t, "postgres", dbInstance, dbName, clientRole)
 
-	controlURL, control := tailscale.StartControl(t)
-	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-connector")
+	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, control.URL, "test-db-connector")
 	defer connectorTsnet.Close()
-	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-client")
+	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, control.URL, "test-db-client")
 	defer clientTsnet.Close()
-	filterRules := formatFilterRules(clientIP, connectorIP, appCap)
-	tailscale.MustInjectFilterRules(t, control, connectorNodeKey, clientNodeKey, filterRules...)
-	tailscale.MustInjectFilterRules(t, control, clientNodeKey, connectorNodeKey)
+	control.grantAppCap(appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey)
 
 	// ====
 	// WHEN
@@ -110,18 +111,14 @@ func TestPostgresRelay(t *testing.T) {
 }
 
 func TestCockroachDBRelay(t *testing.T) {
-	testutil.SkipUnlessAcc(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ACCTEST_TIMEOUT)
 	defer cancel()
-
-	// Disable ryuk to avoid the overhead of running another container on every test run.
-	// It isn't required, as we're already running the container cleanup with defer on exit.
-	os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 	// =====
 	// GIVEN
 	// =====
+
+	control := setupControl(t)
 
 	dbInstance := "my-cockroach-1"
 	dbName := "testdb"
@@ -133,16 +130,13 @@ func TestCockroachDBRelay(t *testing.T) {
 	host, port, cleanup := cockroachdb.StartCockroachDB(t, ctx, certDir, dbName, adminUser, adminPassword, clientRole)
 	defer cleanup()
 	configJSON := formatConfigJSON(t, "cockroachdb", dbInstance, host, port, CAFile, adminUser, adminPassword)
-	appCap := formatAppCap(t, "cockroachdb", dbInstance, dbName, port, clientRole)
+	appCap := formatAppCap(t, "cockroachdb", dbInstance, dbName, clientRole)
 
-	controlURL, control := tailscale.StartControl(t)
-	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-connector")
+	connectorTsnet, connectorIP, connectorNodeKey := tailscale.StartTsnetServer(t, ctx, control.URL, "test-db-connector")
 	defer connectorTsnet.Close()
-	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, controlURL, "test-db-client")
+	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, control.URL, "test-db-client")
 	defer clientTsnet.Close()
-	filterRules := formatFilterRules(clientIP, connectorIP, appCap)
-	tailscale.MustInjectFilterRules(t, control, connectorNodeKey, clientNodeKey, filterRules...)
-	tailscale.MustInjectFilterRules(t, control, clientNodeKey, connectorNodeKey)
+	control.grantAppCap(appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey)
 
 	// ====
 	// WHEN
@@ -202,6 +196,41 @@ func TestCockroachDBRelay(t *testing.T) {
 	t.Logf("Successfully inserted and queried database via connector")
 }
 
+type controlFixture struct {
+	URL         string
+	grantAppCap func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic)
+}
+
+func setupControl(t *testing.T) controlFixture {
+	testutil.SkipUnlessAcc(t)
+
+	controlURL := os.Getenv("TEST_CONTROL_URL")
+	apiKey := os.Getenv("TEST_APIKEY")
+
+	if controlURL == "" {
+		t.Log("TEST_CONTROL_URL environment variable is empty, running acceptance test against testcontrol server")
+		fakeControlUrl, control := tailscale.FakeControlStart(t)
+		return controlFixture{
+			URL: fakeControlUrl,
+			grantAppCap: func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
+				tailscale.FakeControlGrantAppCap(t, appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey, control)
+			},
+		}
+	}
+
+	if apiKey == "" {
+		t.Fatal("TEST_CONTROL_URL environment variable is set, but TEST_APIKEY is empty.")
+	}
+
+	t.Logf("Running acceptance test against TEST_CONTROL_URL=%s", controlURL)
+	return controlFixture{
+		URL: controlURL,
+		grantAppCap: func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
+			tailscale.ControlGrantAppCap(t, appCap, controlURL, apiKey)
+		},
+	}
+}
+
 func formatConfigJSON(t *testing.T, engine string, instance string, host string, port int, caFile string, adminUser string, adminPassword string) string {
 	t.Helper()
 
@@ -220,48 +249,18 @@ func formatConfigJSON(t *testing.T, engine string, instance string, host string,
 	return configJSON
 }
 
-func formatAppCap(t *testing.T, engine string, instance string, db string, port int, role string) string {
+func formatAppCap(t *testing.T, engine string, instance string, db string, role string) map[string]any {
 	t.Helper()
 
-	capValue, err := json.Marshal(dbCapability{
-		Engine: engine,
-		Access: []accessSchema{
-			{
-				Databases: []string{db},
-				Roles:     []string{role},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to marshal capability: %v", err)
-	}
-
-	return fmt.Sprintf(`{%q: %s}`, instance, capValue)
-}
-
-func formatFilterRules(clientIP netip.Addr, connectorIP netip.Addr, connectorAppCap string) []tailcfg.FilterRule {
-	return []tailcfg.FilterRule{
-		{
-			SrcIPs: []string{clientIP.String()},
-			DstPorts: []tailcfg.NetPortRange{
+	return map[string]any{
+		instance: dbCapability{
+			Engine: engine,
+			Access: []accessSchema{
 				{
-					IP:    fmt.Sprintf("%s/32", connectorIP), // TODO: there must be a better way!?
-					Ports: tailcfg.PortRange{First: 0, Last: 65535},
+					Databases: []string{db},
+					Roles:     []string{role},
 				},
 			},
-		},
-		{
-			SrcIPs: []string{clientIP.String()},
-			CapGrant: []tailcfg.CapGrant{{
-				Dsts: []netip.Prefix{
-					netip.MustParsePrefix(fmt.Sprintf("%s/32", connectorIP)), // TODO: there must be a better way!?
-				},
-				CapMap: tailcfg.PeerCapMap{
-					tsDBCap: []tailcfg.RawMessage{
-						tailcfg.RawMessage(connectorAppCap),
-					},
-				},
-			}},
 		},
 	}
 }

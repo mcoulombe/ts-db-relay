@@ -241,9 +241,13 @@ sudo ln -s $DOCKER_SOCKET_FILE_LOCATION /var/run/docker.sock
 ```
 Alternatively, if you don't want this to apply globally, set the DOCKER_HOST environment variable to that custom location.
 
-To run the unit & acceptance tests
+To run the unit and acceptance tests
 ```
 make test_acc
+```
+The acceptance tests will run against a testcontrol server unless TEST_CONTROL_URL and TEST_APIKEY environment variables are set.
+```
+TEST_CONTROL_URL="http://localhost:31544" TEST_APIKEY=$SOME_KEY go test -v ./internal -acc
 ```
 
 To run only the unit tests

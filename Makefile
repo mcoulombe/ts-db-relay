@@ -29,6 +29,11 @@ run: dev
 test:
 	go test -v ./internal
 
-.PHONY: test_acc
-test_acc:
+.PHONY: testacc
+testacc:
 	go test -v ./internal -args -acc
+
+.PHONY: testacc_local
+testacc_local:
+	TEST_CONTROL_URL="http://localhost:31544" TEST_APIKEY=$$(jq -r .apiKey /tmp/terraform-api-key.json) go test -v ./internal -acc
+
