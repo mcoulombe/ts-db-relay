@@ -51,6 +51,7 @@ func TestPostgresRelay(t *testing.T) {
 	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, control.URL, "test-db-client")
 	defer clientTsnet.Close()
 	control.grantAppCap(appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey)
+	defer control.revokeAllGrants(clientIP, clientNodeKey, connectorIP, connectorNodeKey)
 
 	// ====
 	// WHEN
@@ -137,6 +138,7 @@ func TestCockroachDBRelay(t *testing.T) {
 	clientTsnet, clientIP, clientNodeKey := tailscale.StartTsnetServer(t, ctx, control.URL, "test-db-client")
 	defer clientTsnet.Close()
 	control.grantAppCap(appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey)
+	defer control.revokeAllGrants(clientIP, clientNodeKey, connectorIP, connectorNodeKey)
 
 	// ====
 	// WHEN
@@ -197,8 +199,9 @@ func TestCockroachDBRelay(t *testing.T) {
 }
 
 type controlFixture struct {
-	URL         string
-	grantAppCap func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic)
+	URL             string
+	grantAppCap     func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic)
+	revokeAllGrants func(clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic)
 }
 
 func setupControl(t *testing.T) controlFixture {
@@ -215,6 +218,9 @@ func setupControl(t *testing.T) controlFixture {
 			grantAppCap: func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
 				tailscale.FakeControlGrantAppCap(t, appCap, clientIP, clientNodeKey, connectorIP, connectorNodeKey, control)
 			},
+			revokeAllGrants: func(clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
+				// This is a no op for now because that fake control starts with a clean slate for each test.
+			},
 		}
 	}
 
@@ -226,7 +232,10 @@ func setupControl(t *testing.T) controlFixture {
 	return controlFixture{
 		URL: controlURL,
 		grantAppCap: func(appCap map[string]any, clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
-			tailscale.ControlGrantAppCap(t, appCap, controlURL, apiKey)
+			tailscale.ControlGrantAppCap(t, clientIP, connectorIP, appCap, controlURL, apiKey)
+		},
+		revokeAllGrants: func(clientIP netip.Addr, clientNodeKey key.NodePublic, connectorIP netip.Addr, connectorNodeKey key.NodePublic) {
+			tailscale.ControlRevokeAllGrants(t, clientIP, connectorIP, controlURL, apiKey)
 		},
 	}
 }
