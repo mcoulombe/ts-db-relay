@@ -112,7 +112,7 @@ func FormatFilterRules(t *testing.T, clientIP netip.Addr, connectorIP netip.Addr
 	}
 }
 
-func ControlGrantAppCap(t *testing.T, appCaps map[string]any, controlURL string, apiKey string) {
+func ControlGrantAppCap(t *testing.T, srcIP netip.Addr, dstIP netip.Addr, appCaps map[string]any, controlURL string, apiKey string) {
 	t.Helper()
 
 	url, err := url.Parse(controlURL)
@@ -127,8 +127,8 @@ func ControlGrantAppCap(t *testing.T, appCaps map[string]any, controlURL string,
 	acl := tailscale.ACL{
 		Grants: []tailscale.Grant{
 			{
-				Source:      []string{"*"},
-				Destination: []string{"*"},
+				Source:      []string{srcIP.String()},
+				Destination: []string{dstIP.String()},
 				IP:          []string{"tcp:*"},
 				App: map[string][]map[string]any{
 					pkg.TSDBCap: {appCaps},
@@ -142,4 +142,38 @@ func ControlGrantAppCap(t *testing.T, appCaps map[string]any, controlURL string,
 		t.Fatal(err)
 	}
 	t.Logf("API response: %s", res)
+}
+
+func ControlRevokeAllGrants(t *testing.T, srcIP netip.Addr, dstIP netip.Addr, controlURL string, apiKey string) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	url, err := url.Parse(controlURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &tailscale.Client{
+		BaseURL: url,
+		APIKey:  apiKey,
+	}
+
+	acl, err := client.PolicyFile().Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedGrants := []tailscale.Grant{}
+	for _, grant := range acl.Grants {
+		if grant.Source[0] != srcIP.String() || grant.Destination[0] != dstIP.String() {
+			updatedGrants = append(updatedGrants, grant)
+		} else {
+			t.Logf("Removing grant from ACL: %s", grant)
+		}
+	}
+	acl.Grants = updatedGrants
+
+	_, err = client.PolicyFile().SetAndGet(ctx, *acl, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 }
