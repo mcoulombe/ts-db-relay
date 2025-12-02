@@ -159,7 +159,7 @@ func TestMongoDBPlugin_NewUser(t *testing.T) {
 			errContains: "failed to parse creation statement",
 		},
 		{
-			name: "missing DB field in statement",
+			name: "missing authSource field in statement",
 			req: dbplugin.NewUserRequest{
 				UsernameConfig: dbplugin.UsernameMetadata{
 					DisplayName: "newuser",
@@ -173,7 +173,7 @@ func TestMongoDBPlugin_NewUser(t *testing.T) {
 			errContains: "auth database where the target user is defined must be specified",
 		},
 		{
-			name: "empty DB field in statement",
+			name: "empty authSource field in statement",
 			req: dbplugin.NewUserRequest{
 				UsernameConfig: dbplugin.UsernameMetadata{
 					DisplayName: "newuser",
@@ -181,7 +181,7 @@ func TestMongoDBPlugin_NewUser(t *testing.T) {
 				},
 				Password: "password123",
 				Statements: dbplugin.Statements{
-					Commands: []string{`{"db": ""}`},
+					Commands: []string{`{"authSource": ""}`},
 				},
 			},
 			errContains: "auth database where the target user is defined must be specified",

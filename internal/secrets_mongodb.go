@@ -24,7 +24,9 @@ type mongoDBConfig struct {
 }
 
 type mongoDBNewUserStatement struct {
-	DB string `json:"db"`
+	// The authentication database (also called auth source) where the target user is defined.
+	// https://www.mongodb.com/docs/php-library/current/security/authentication/scram/#scram-sha-256
+	AuthSource string `json:"auth_source"`
 }
 
 type mongoDBUserInfo struct {
@@ -102,12 +104,12 @@ func (m *mongoDBPlugin) NewUser(ctx context.Context, req dbplugin.NewUserRequest
 	if err := json.Unmarshal([]byte(req.Statements.Commands[0]), &stmt); err != nil {
 		return dbplugin.NewUserResponse{}, fmt.Errorf("failed to parse creation statement: %w", err)
 	}
-	if stmt.DB == "" {
+	if stmt.AuthSource == "" {
 		return dbplugin.NewUserResponse{}, fmt.Errorf("auth database where the target user is defined must be specified in the creation statements")
 	}
 
 	var existingUserInfo mongoDBUserInfo
-	err := m.client.Database(stmt.DB).RunCommand(ctx, bson.D{
+	err := m.client.Database(stmt.AuthSource).RunCommand(ctx, bson.D{
 		{
 			Key:   "usersInfo",
 			Value: userToImpersonate,
@@ -117,10 +119,10 @@ func (m *mongoDBPlugin) NewUser(ctx context.Context, req dbplugin.NewUserRequest
 		return dbplugin.NewUserResponse{}, fmt.Errorf("failed to query user info of target user %q: %w", userToImpersonate, err)
 	}
 	if len(existingUserInfo.Users) == 0 {
-		return dbplugin.NewUserResponse{}, fmt.Errorf("target user %q not found in database %q", userToImpersonate, stmt.DB)
+		return dbplugin.NewUserResponse{}, fmt.Errorf("target user %q not found in database %q", userToImpersonate, stmt.AuthSource)
 	}
 
-	err = m.client.Database(stmt.DB).RunCommand(ctx, bson.D{
+	err = m.client.Database(stmt.AuthSource).RunCommand(ctx, bson.D{
 		{
 			Key:   "createUser",
 			Value: newUsername,
@@ -139,7 +141,7 @@ func (m *mongoDBPlugin) NewUser(ctx context.Context, req dbplugin.NewUserRequest
 	}
 
 	return dbplugin.NewUserResponse{
-		Username: encodeMongoDBUsername(newUsername, stmt.DB),
+		Username: encodeMongoDBUsername(newUsername, stmt.AuthSource),
 	}, nil
 }
 
