@@ -5,14 +5,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/openbao/openbao/sdk/v2/database/dbplugin/v5"
 	"github.com/tailscale/ts-db-connector/pkg"
 	"tailscale.com/client/local"
@@ -107,8 +109,21 @@ func (r *relay) Serve(tsListener net.Listener) error {
 			return err
 		}
 		go func() {
-			if err := r.serveConnection(tsConn); err != nil {
-				log.Printf("session ended with error: %v", err)
+			logger := slog.With("trace_id", uuid.New().String(), "db_key", r.dbKey)
+			if err := r.serveConnection(logger, tsConn); err != nil {
+				var relayErr *RelayError
+
+				if errors.As(err, &relayErr) {
+					if relayErr.Underlying == nil {
+						logger.Warn(relayErr.Message, "metrics_key", relayErr.Code, "origin", relayErr.Origin)
+					} else {
+						logger.Error(relayErr.Message, "metrics_key", relayErr.Code, "origin", relayErr.Origin, "error", relayErr.Underlying)
+					}
+					r.metrics.errors.Add(relayErr.Code, 1)
+				} else {
+					r.metrics.errors.Add("unclassified-error", 1)
+					slog.Error(err.Error())
+				}
 			}
 		}()
 	}
@@ -123,7 +138,8 @@ func (r *relay) Metrics() expvar.Var {
 }
 
 // serveConnection handles a single database connection
-func (r *relay) serveConnection(tsConn net.Conn) error {
+func (r *relay) serveConnection(logger *slog.Logger, tsConn net.Conn) error {
+	logger.Debug("serving new connection")
 	defer tsConn.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -131,61 +147,72 @@ func (r *relay) serveConnection(tsConn net.Conn) error {
 
 	clientConn, err := r.concrete.handleTLSNegotiation(ctx, tsConn)
 	if err != nil {
-		r.metrics.errors.Add("tls-negotiation", 1)
-		return fmt.Errorf("TLS negotiation: %w", err)
+		return NewError(OriginServer, "tls-negotiation", "TLS negotiation failed", err)
 	}
+	logger.Debug("TLS negotiation with client successful")
 
 	username, database, params, err := r.concrete.parseHandshake(ctx, clientConn)
 	if err != nil {
-		r.metrics.errors.Add("handshake-parse", 1)
-		return fmt.Errorf("parsing handshake: %w", err)
+		return NewError(OriginServer, "handshake-parsing", "handshake parsing failed", err)
 	}
+	if username == "" || database == "" {
+		logger.Debug("incomplete handshake details, rejecting the connection request as it appears malformed", "username", username, "database", database)
+		return nil
+	}
+	logger.Debug("parsed client handshake", "username", username, "database", database, "params", params)
 
 	r.targetRole = username
 	r.sessionDatabase = database
 
 	user, machine, capabilities, err := r.getClientIdentity(ctx, tsConn)
 	if err != nil {
-		r.metrics.errors.Add("authentication", 1)
-		return err
+		return NewError(OriginExternal, "identity-verification", "Tailscale identity verification failed", err)
 	}
+	logger.Debug("Tailscale identity verification successful", "user", user, "machine", machine)
 
-	allowed, err := r.hasAccess(user, machine, r.dbKey, string(r.dbEngine), r.sessionDatabase, r.targetRole, capabilities)
+	allowed, err := r.hasAccess(r.dbKey, string(r.dbEngine), r.sessionDatabase, r.targetRole, capabilities)
 	if err != nil {
-		r.metrics.errors.Add("authentication", 1)
-		return err
+		return NewError(OriginServer, "access-validation", "access validation failed", err)
 	}
 	if !allowed {
-		r.metrics.errors.Add("authorization", 1)
-		return fmt.Errorf("access denied for user %s to database %s as role %s", user, r.sessionDatabase, r.targetRole)
+		return NewError(OriginClient, "access-denied", fmt.Sprintf("user %s on machine %s is not allowed to access database %q as role %q on instance %q", user, machine, r.sessionDatabase, r.targetRole, r.dbKey), nil)
 	}
+	logger.Debug("access granted", "user", user, "machine", machine, "database", r.sessionDatabase, "role", r.targetRole)
 
 	err = r.concrete.createSessionUser(ctx)
 	if err != nil {
-		r.metrics.errors.Add("seed-credentials", 1)
-		return err
+		return NewError(OriginServer, "ephemeral-user-creation", "ephemeral user creation failed", err)
 	}
-	defer r.concrete.deleteSessionUser(ctx)
+	logger.Debug("created ephemeral user", "username", r.sessionRole)
+
+	defer func() {
+		err := r.concrete.deleteSessionUser(ctx)
+		if err != nil {
+			_ = NewError(OriginServer, "ephemeral-user-deletion", "failed to delete ephemeral user", err)
+		}
+		logger.Debug("deleted ephemeral user", "username", r.sessionRole)
+	}()
 
 	dbConn, err := r.concrete.connectToDatabase(ctx, params)
 	if err != nil {
-		r.metrics.errors.Add("database-connection", 1)
-		return fmt.Errorf("connecting to database: %w", err)
+		return NewError(OriginServer, "database-connection", "database connection failed", err)
 	}
+	logger.Debug("connected to database", "host", r.dbHost, "port", r.dbPort)
 	defer dbConn.Close()
 
 	if err := r.concrete.sendAuthSuccessToClient(clientConn); err != nil {
-		r.metrics.errors.Add("auth-response", 1)
-		return fmt.Errorf("sending auth success to client: %w", err)
+		return NewError(OriginServer, "auth-response", "sending auth success to client failed", err)
 	}
+	logger.Debug("sent authentication success to client")
 
-	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, "session-user")
+	auditFile, err := createAuditFile(user, machine, string(r.dbEngine), r.dbHost, r.sessionDatabase, r.sessionRole)
 	if err != nil {
-		r.metrics.errors.Add("audit-file-create-failed", 1)
-		return fmt.Errorf("failed to create audit file: %v", err)
+		return NewError(OriginServer, "audit-file-creation", "audit file creation failed", err)
 	}
+	logger.Debug("created connection audit file", "file", auditFile)
 	defer auditFile.Close()
 
+	logger.Debug("starting connection relay between client and database")
 	r.metrics.startedSessions.Add(1)
 	r.metrics.activeSessions.Add(1)
 	defer r.metrics.activeSessions.Add(-1)
@@ -197,8 +224,7 @@ func (r *relay) serveConnection(tsConn net.Conn) error {
 func (r *relay) getClientIdentity(ctx context.Context, conn net.Conn) (string, string, []tailcfg.RawMessage, error) {
 	whois, err := r.tsClient.WhoIs(ctx, conn.RemoteAddr().String())
 	if err != nil {
-		r.metrics.errors.Add("whois-failed", 1)
-		return "", "", nil, fmt.Errorf("unexpected error getting client identity: %v", err)
+		return "", "", nil, fmt.Errorf("WhoIs lookup failed: %w", err)
 	}
 
 	machine := ""
@@ -218,8 +244,7 @@ func (r *relay) getClientIdentity(ctx context.Context, conn net.Conn) (string, s
 		}
 	}
 	if user == "" || machine == "" {
-		r.metrics.errors.Add("no-ts-identity", 1)
-		return "", "", nil, fmt.Errorf("couldn't identify source user and machine (user %q, machine %q)", user, machine)
+		return "", "", nil, fmt.Errorf("incomplete Tailscale identity, user %q or machine %q undefined", user, machine)
 	}
 
 	return user, machine, whois.CapMap[tailcfg.PeerCapability(pkg.TSDBCap)], nil
@@ -227,17 +252,16 @@ func (r *relay) getClientIdentity(ctx context.Context, conn net.Conn) (string, s
 
 // hasAccess checks if the given Tailscale identity is authorized to access the specified database
 // according to the grants defined in the tailnet policy file.
-func (r *relay) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole string, capabilities []tailcfg.RawMessage) (bool, error) {
+func (r *relay) hasAccess(dbKey, dbEngine, targetDB, targetRole string, capabilities []tailcfg.RawMessage) (bool, error) {
 	if capabilities == nil {
-		r.metrics.errors.Add("no-ts-db-database-capability", 1)
-		return false, fmt.Errorf("user %q on machine %q does not have ts-db-database capability", user, machine)
+		return false, nil
 	}
 
+	allowed := false
 	for _, capability := range capabilities {
 		var grantCap map[string]dbCapability
 		if err := json.Unmarshal([]byte(capability), &grantCap); err != nil {
-			r.metrics.errors.Add("capability-parse-error", 1)
-			return false, fmt.Errorf("failed to parse capability value: %v", err)
+			return false, fmt.Errorf("capability parsing failed: %w", err)
 		}
 
 		for capDBKey, dbCap := range grantCap {
@@ -252,7 +276,7 @@ func (r *relay) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole
 			for _, accessRule := range dbCap.Access {
 				roleAllowed := false
 				for _, allowedRole := range accessRule.Roles {
-					if allowedRole == sessionRole {
+					if allowedRole == targetRole {
 						roleAllowed = true
 						break
 					}
@@ -263,7 +287,7 @@ func (r *relay) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole
 
 				databaseAllowed := false
 				for _, allowedDB := range accessRule.Databases {
-					if allowedDB == sessionDB {
+					if allowedDB == targetDB {
 						databaseAllowed = true
 						break
 					}
@@ -272,11 +296,11 @@ func (r *relay) hasAccess(user, machine, dbKey, dbEngine, sessionDB, sessionRole
 					continue
 				}
 
-				return true, nil
+				allowed = true
+				break
 			}
 		}
 	}
 
-	r.metrics.errors.Add("not-allowed-to-impersonate", 1)
-	return false, fmt.Errorf("user %q is not allowed to access database %q as role %q", user, sessionDB, sessionRole)
+	return allowed, nil
 }

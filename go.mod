@@ -17,8 +17,10 @@ replace (
 // Commit f9407a27fbee corresponds to the v2.4.0 git tag (2024-09-11).
 require (
 	github.com/docker/go-connections v0.6.0
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgproto3/v2 v2.3.3
 	github.com/lib/pq v1.10.9
+	github.com/mitchellh/mapstructure v1.5.0
 	github.com/openbao/openbao v0.0.0-20250828202315-f9407a27fbee
 	github.com/openbao/openbao/sdk/v2 v2.4.0
 	github.com/stretchr/testify v1.11.1
@@ -95,7 +97,6 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-tpm v0.9.4 // indirect
 	github.com/google/nftables v0.2.1-0.20240414091927-5e242ec57806 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
@@ -141,7 +142,6 @@ require (
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
-	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.1.0 // indirect

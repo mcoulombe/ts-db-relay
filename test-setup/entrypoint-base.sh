@@ -21,7 +21,8 @@ else
     "hostname": "ts-db-connector"
   },
   "connector": {
-    "admin_port": ${TS_ADMIN_PORT:-8080}
+    "admin_port": ${TS_ADMIN_PORT:-8080},
+    "log_level": "debug"
   },
   "databases": {}
 }

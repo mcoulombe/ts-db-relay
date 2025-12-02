@@ -26,9 +26,11 @@ Configuration is stored in HuJSON format (JSON with comments) and loaded via the
 
 #### Server Configuration
 
-| Field        | Purpose                                     | Default |
-|--------------|---------------------------------------------|---------|
-| `admin_port` | HTTP port for admin API and debug endpoints | `8080`  |
+| Field                    | Purpose                                                                 | Default | Well-known Env Var |
+|--------------------------|-------------------------------------------------------------------------|---------|--------------------|
+| `admin_port`             | HTTP port for admin API and debug endpoints                             | `8080`  | -                  |
+| `log_level`              | Verbosity level for application logs (one of: debug, info, warn, error) | `info`  | `LOG_LEVEL`        |
+| `tailscale_logs_enabled` | Enable tsnet.Server debug-level logging for troubleshooting             | `false` | -                  |
 
 #### Database Configuration
 
@@ -56,7 +58,9 @@ Sensitive information should always be provided from a secured reference.
     "authkey": "env:TS_AUTHKEY"
   },
   "connector": {
-    "admin_port": 8080
+    "admin_port": 8080,
+    "log_level": "info",
+    "tailscale_logs_enabled": false
   },
   "databases": {
     "production-pg": {

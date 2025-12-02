@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,10 +19,14 @@ const (
 	defaultStateDir   = "../data/ts-db-connector"
 	defaultHostname   = "ts-db-connector"
 	defaultAdminPort  = 8080
+	defaultLogLevel   = "info"
 	defaultHost       = "localhost"
 )
 
-var hostnameRegex = regexp.MustCompile(`^[a-zA-Z]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
+var (
+	hostnameRegex               = regexp.MustCompile(`^[a-zA-Z]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
+	defaultConfigFileCandidates = []string{".config.json", ".config.hujson"}
+)
 
 var wellKnownEnvVars = map[string]string{
 	"tailscale.control_url":   "TS_SERVER",
@@ -31,6 +36,7 @@ var wellKnownEnvVars = map[string]string{
 	"tailscale.client_id":     "TS_CLIENT_ID",
 	"tailscale.client_secret": "TS_CLIENT_SECRET",
 	"tailscale.id_token":      "ID_TOKEN",
+	"connector.log_level":     "LOG_LEVEL",
 }
 
 // Config contains all settings for the ts-db-connector.
@@ -78,6 +84,13 @@ type ServerConfig struct {
 	// AdminPort is the HTTP port that serves the debug endpoints
 	// Defaults to 8080
 	AdminPort int `json:"admin_port,omitzero"`
+	// LogLevel is the verbosity level for local application logs
+	// One of "debug", "info", "warn", "error"
+	// Defaults to $LOG_LEVEL or "info"
+	LogLevel string `json:"log_level,omitzero"`
+	// TailscaleLogsEnabled indicates whether debug-level tsnet.Server logs are produced or not
+	// Defaults to false
+	TailscaleLogsEnabled bool `json:"tailscale_logs_enabled,omitzero"`
 }
 
 // DBConfig holds database connection configuration
@@ -137,6 +150,35 @@ func ParseConfig(rawCfg []byte) (*Config, error) {
 	return &config, nil
 }
 
+func DefaultConfigFilePath() (string, error) {
+	for _, candidate := range defaultConfigFileCandidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	userConfigDir, err := os.UserConfigDir()
+	if err == nil {
+		tsdbConfigDir := filepath.Join(userConfigDir, "tsdb")
+		for _, candidate := range defaultConfigFileCandidates {
+			path := filepath.Join(tsdbConfigDir, candidate)
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no config file found in the default location candidates")
+}
+
+func ToLogLevel(level string) (slog.Level, error) {
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(level)); err != nil {
+		return 0, err
+	}
+	return l, nil
+}
+
 func (c *Config) resolveValues() error {
 	var err error
 
@@ -190,6 +232,14 @@ func (c *Config) resolveValues() error {
 	}
 	if c.Connector.AdminPort == 0 {
 		c.Connector.AdminPort = defaultAdminPort
+	}
+
+	c.Connector.LogLevel, err = resolveValueFromReference(c.Connector.LogLevel, "connector.log_level")
+	if err != nil {
+		return err
+	}
+	if c.Connector.LogLevel == "" {
+		c.Connector.LogLevel = defaultLogLevel
 	}
 
 	for name, db := range c.Databases {
@@ -261,8 +311,7 @@ func (c *Config) validate() error {
 	}
 
 	if c.Tailscale.AuthKey == "" && c.Tailscale.ClientID == "" && c.Tailscale.ClientSecret == "" && c.Tailscale.IDToken == "" {
-		// TODO(max) log in debug once we have a proper debugger setup
-		//log.Printf("Warning: No authentication credentials provided (auth_key, client_id, client_secret, or id_token). This is only acceptable if already connected to the tailnet.")
+		slog.Info("no authentication credentials provided (auth_key, client_id, client_secret, or id_token); only acceptable if already connected to tailnet")
 	}
 
 	if c.Connector.AdminPort == 0 {
@@ -270,6 +319,13 @@ func (c *Config) validate() error {
 	}
 	if err := validatePort(c.Connector.AdminPort); err != nil {
 		return fmt.Errorf("connector.admin_port: %w", err)
+	}
+
+	if c.Connector.LogLevel == "" {
+		return fmt.Errorf("connector.log_level is required")
+	}
+	if _, err := ToLogLevel(c.Connector.LogLevel); err != nil {
+		return fmt.Errorf("connector.log_level: %w", err)
 	}
 
 	for name, db := range c.Databases {
