@@ -39,14 +39,14 @@ type Relay interface {
 	// parseHandshake extracts authentication details from the client's initial handshake.
 	// Returns the requested username, database (or default if not specified), and any additional connection parameters
 	// to forward to the underlying database.
-	parseHandshake(conn net.Conn) (username, database string, params map[string]string, err error)
+	parseHandshake(ctx context.Context, conn net.Conn) (username, database string, params map[string]string, err error)
 
 	// createSessionUser creates a dynamic user used for the duration of the connection.
 	// The user is created with the role and permissions equal to the principal being impersonated.
 	createSessionUser(ctx context.Context) error
 
 	// deleteSessionUser revokes the dynamic user created for the session.
-	deleteSessionUser(ctx context.Context)
+	deleteSessionUser(ctx context.Context) error
 
 	// connectToDatabase establishes a connection to the underlying database with the dynamic user created previously.
 	connectToDatabase(ctx context.Context, params map[string]string) (net.Conn, error)
@@ -135,7 +135,7 @@ func (r *relay) serveConnection(tsConn net.Conn) error {
 		return fmt.Errorf("TLS negotiation: %w", err)
 	}
 
-	username, database, params, err := r.concrete.parseHandshake(clientConn)
+	username, database, params, err := r.concrete.parseHandshake(ctx, clientConn)
 	if err != nil {
 		r.metrics.errors.Add("handshake-parse", 1)
 		return fmt.Errorf("parsing handshake: %w", err)
